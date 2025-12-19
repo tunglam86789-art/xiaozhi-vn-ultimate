@@ -16,6 +16,7 @@
 void* create_board();
 class AudioCodec;
 class Display;
+class LcdTouch;
 class SdCard;
 class Board {
 private:
@@ -42,6 +43,7 @@ public:
     virtual AudioCodec* GetAudioCodec() = 0;
     virtual bool GetTemperature(float& esp32temp);
     virtual Display* GetDisplay();
+    virtual LcdTouch* GetTouch() { return nullptr; }
     virtual Camera* GetCamera();
     virtual SdCard* GetSdCard();
     virtual NetworkInterface* GetNetwork() = 0;

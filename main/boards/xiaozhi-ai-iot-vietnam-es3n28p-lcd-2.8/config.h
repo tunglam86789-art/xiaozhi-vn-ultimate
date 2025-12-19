@@ -70,6 +70,8 @@
 
 #define LCD_SPI_HOST          SPI3_HOST
 
+#define LCD_ROTATION_DEGREE   0  // Set to 0, 90, 180, or 270
+#if LCD_ROTATION_DEGREE == 0
 #define LCD_TYPE_ILI9341_SERIAL
 #define DISPLAY_WIDTH         240
 #define DISPLAY_HEIGHT        320
@@ -82,5 +84,21 @@
 #define DISPLAY_OFFSET_Y      0
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
 #define DISPLAY_SPI_MODE      0
+#endif
+
+#if LCD_ROTATION_DEGREE == 90
+#define LCD_TYPE_ILI9341_SERIAL
+#define DISPLAY_WIDTH         320
+#define DISPLAY_HEIGHT        240
+#define DISPLAY_MIRROR_X      false
+#define DISPLAY_MIRROR_Y      false
+#define DISPLAY_SWAP_XY       true
+#define DISPLAY_INVERT_COLOR  true
+#define DISPLAY_RGB_ORDER     LCD_RGB_ELEMENT_ORDER_BGR
+#define DISPLAY_OFFSET_X      0
+#define DISPLAY_OFFSET_Y      0
+#define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
+#define DISPLAY_SPI_MODE      0
+#endif
 
 #endif  // _BOARD_CONFIG_H_
