@@ -58,13 +58,6 @@ static std::string ms_to_time_string(int64_t ms) {
 #endif
 #define TAG "LcdDisplay"
 
-//Declare theme color
-#define BAR_MAX_HEIGHT (240 / 2)
-#define BAR_COL_NUM  40
-#define LCD_FFT_SIZE 512
-static int current_heights[BAR_COL_NUM] = {0};
-static float avg_power_spectrum[LCD_FFT_SIZE/2]={-25.0f};
-
 #define COLOR_BLACK   0x0000
 #define COLOR_RED     0xF800
 #define COLOR_GREEN   0x07E0
@@ -96,6 +89,14 @@ static float avg_power_spectrum[LCD_FFT_SIZE/2]={-25.0f};
 #define LIGHT_BORDER_COLOR           lv_color_hex(0xE0E0E0)     // Light gray border
 #define LIGHT_LOW_BATTERY_COLOR      lv_color_black()           // Black for light mode
 
+//Declare theme color
+#define BAR_MAX_HEIGHT (240 / 2)
+#define BAR_COL_NUM  40
+#define LCD_FFT_SIZE 512
+static int current_heights[BAR_COL_NUM] = {0};
+static float avg_power_spectrum[LCD_FFT_SIZE/2]={-25.0f};
+static uint32_t last_flash_time[BAR_COL_NUM] = {0};
+static uint16_t falling_colors[BAR_COL_NUM] = {COLOR_BLUE};
 
 // Define dark theme colors
 const ThemeColors DARK_THEME = {
@@ -1955,16 +1956,16 @@ void LcdDisplay::draw_spectrum(float *power_spectrum,int fft_size){
     const int bartotal=BAR_COL_NUM;
     int bar_height;
     const int bar_max_height = bar_max_hight_;
-    const int bar_width=canvas_width_/bartotal;
-    int x_pos=0;
-    int y_pos = (canvas_height_) - 1;
+    const int bar_width = canvas_width_ / bartotal;
+    int x_pos = 0;
+    int y_pos = (canvas_height_)-1;
 
-    float magnitude[bartotal]={0};
-    float max_magnitude=0;
+    float magnitude[bartotal] = {0};
+    float max_magnitude = 0;
 
     const float MIN_DB = -25.0f;
     const float MAX_DB = 0.0f;
-    
+
     for (int bin = 0; bin < bartotal; bin++) {
         int start = bin * (fft_size / bartotal);
         int end = (bin+1) * (fft_size / bartotal);
@@ -1977,11 +1978,8 @@ void LcdDisplay::draw_spectrum(float *power_spectrum,int fft_size){
         if(count>0){
             magnitude[bin] /= count;
         }
-      
-
         if (magnitude[bin] > max_magnitude) max_magnitude = magnitude[bin];
     }
-
 
     magnitude[1]=magnitude[1]*0.6;
     magnitude[2]=magnitude[2]*0.7;
@@ -1990,7 +1988,6 @@ void LcdDisplay::draw_spectrum(float *power_spectrum,int fft_size){
     magnitude[5]=magnitude[5]*0.9;
 
     for (int bin = 1; bin < bartotal; bin++) {
-        
         if (magnitude[bin] > 0.0f && max_magnitude > 0.0f) {
             // Relative dB value: 20 * log10(magnitude/ref_level)
             magnitude[bin] = 20.0f * log10f(magnitude[bin] / max_magnitude+ 1e-10);
@@ -2004,16 +2001,22 @@ void LcdDisplay::draw_spectrum(float *power_spectrum,int fft_size){
     
     // Skip the DC component (k=0)
     for (int k = 1; k < bartotal; k++) {
-        x_pos=canvas_width_/bartotal*(k-1);
-        float mag=(magnitude[k] - MIN_DB) / (MAX_DB - MIN_DB);
+        x_pos = canvas_width_ / bartotal * (k - 1);
+        float mag = (magnitude[k] - MIN_DB) / (MAX_DB - MIN_DB);
         mag = std::max(0.0f, std::min(1.0f, mag));
-        bar_height=int(mag*(bar_max_height));
+#ifndef SPECTRUM_FALLING_FIREWORK_EFFECT_ENABLED
+        bar_height = int(mag * (bar_max_height));
+        int color = get_bar_color(k);
+        draw_bar(x_pos, y_pos, bar_width, bar_height, color, k - 1);
+#else
+        // Thêm hiệu ứng nhảy theo nhạc
+        float bounce = sin(esp_timer_get_time() * 0.001f + k * 0.3f) * 0.05f + 1.0f;
+        bar_height = int(mag * bar_max_height * bounce);
+        // Vẽ cột với màu gradient và hiệu ứng mờ dần
+        draw_bar(x_pos, y_pos, bar_width, bar_height, 0, k - 1);
+#endif
         
-        int color=get_bar_color(k);
-        draw_bar(x_pos,y_pos,bar_width,bar_height, color,k-1);
-        //printf("x: %d, y: %d,\n", x_pos, bar_height);
     }
-
 }
 
 int16_t* LcdDisplay::MakeAudioBuffFFT(size_t sample_count) {
@@ -2083,34 +2086,101 @@ void LcdDisplay::processAudioData() {
 }
 
 void LcdDisplay::draw_bar(int x,int y,int bar_width,int bar_height,uint16_t color,int bar_index){
+#ifndef SPECTRUM_FALLING_FIREWORK_EFFECT_ENABLED
+    const int block_space = 2;
+    const int block_x_size = bar_width - block_space;
+    const int block_y_size = 4;
 
-    const int block_space=2;
-    const int block_x_size=bar_width-block_space;
-    const int block_y_size=4;
+    int blocks_per_col = (bar_height / (block_y_size + block_space));
+    int start_x = (block_x_size + block_space) / 2 + x;
+
+    if (current_heights[bar_index] < bar_height) {
+        current_heights[bar_index] = bar_height;
+        falling_colors[bar_index] = COLOR_BLUE; // Màu xanh khi lên cao nhất
+    }
+    else {
+        uint32_t current_time = esp_timer_get_time() / 1000;
+        int fall_speed = 2;
+        current_heights[bar_index] = current_heights[bar_index] - fall_speed;
+        if (current_heights[bar_index] > (block_y_size + block_space)) {
+            if (current_time - last_flash_time[bar_index] > 80) {
+                falling_colors[bar_index] = get_random_color();
+                last_flash_time[bar_index] = current_time;
+            }
+            draw_block(start_x, canvas_height_ - current_heights[bar_index], block_x_size, block_y_size, falling_colors[bar_index], bar_index);
+        }
+    }
+
+    draw_block(start_x, canvas_height_ - 1, block_x_size, block_y_size, color, bar_index);
+
+    for (int j = 1; j < blocks_per_col; j++) {
+        int start_y = j * (block_y_size + block_space);
+        draw_block(start_x, canvas_height_ - start_y, block_x_size, block_y_size, color, bar_index);
+    }
+#else
+    const int block_space = 2;
+    const int block_x_size = bar_width - block_space;
+    const int block_y_size = 4;
     
-    int blocks_per_col=(bar_height/(block_y_size+block_space));
-    int start_x=(block_x_size+block_space)/2+x;
+    int blocks_per_col = (bar_height / (block_y_size + block_space));
+    int start_x = (block_x_size + block_space) / 2 + x;
     
-    if(current_heights[bar_index]<bar_height) 
-    {
-        current_heights[bar_index]=bar_height;
-    }
-    else{
-        int fall_speed=2;
-        current_heights[bar_index]=current_heights[bar_index]-fall_speed;
-        if(current_heights[bar_index]>(block_y_size+block_space)) 
-        draw_block(start_x,canvas_height_-current_heights[bar_index],block_x_size,block_y_size,color,bar_index);
-
-    }
-   
-    draw_block(start_x,canvas_height_-1,block_x_size,block_y_size,color,bar_index);
-
-    for(int j=1;j<blocks_per_col;j++){
+    uint32_t current_time = esp_timer_get_time() / 1000;
+    
+    // Lấy màu cho cột (gradient thay đổi từ trái sang phải)
+    uint16_t column_color = get_column_color(bar_index);
+    
+    if (current_heights[bar_index] < bar_height) {
+        // Thanh được đẩy lên cao nhất - sử dụng màu xanh biển SÁNG
+        current_heights[bar_index] = bar_height;
+        falling_colors[bar_index] = COLOR_BLUE; // Màu xanh khi lên cao nhất
+    } else {
+        // Thanh đang rơi xuống
+        int fall_speed = 2;
+        current_heights[bar_index] = current_heights[bar_index] - fall_speed;
         
-        int start_y=j*(block_y_size+block_space);
-        draw_block(start_x,canvas_height_-start_y,block_x_size,block_y_size,color,bar_index); 
-        
+        // Kiểm tra nếu cần nhấp nháy màu ngẫu nhiên
+        if (current_heights[bar_index] > (block_y_size + block_space)) {
+            // Nhấp nháy mỗi 80ms (nhanh hơn)
+            if (current_time - last_flash_time[bar_index] > 80) {
+                // TĂNG ĐỘ SÁNG cho thanh rơi
+                falling_colors[bar_index] = get_random_color();
+                last_flash_time[bar_index] = current_time;
+            }
+            
+            // Vẽ thanh rơi với độ sáng CAO (0.8-1.0)
+            // Không áp dụng hiệu ứng mờ dần cho thanh rơi
+            draw_block(start_x, canvas_height_ - current_heights[bar_index], 
+                      block_x_size, block_y_size, falling_colors[bar_index], bar_index);
+        }
     }
+    
+    // Vẽ phần thanh cố định (phần đế) với màu xanh biển MỜ
+    draw_block(start_x, canvas_height_ - 1, block_x_size, block_y_size, 
+               adjust_brightness(COLOR_BLUE, 0.4f), bar_index);
+    
+    // Vẽ các khối của cột sóng với hiệu ứng mờ dần TỪ CHÂN LÊN ĐỈNH
+    // (chân mờ, đỉnh sáng hơn một chút nhưng vẫn mờ)
+    if (bar_height > 0 && blocks_per_col > 0) {
+        for (int j = 1; j <= blocks_per_col; j++) {
+            int start_y = j * (block_y_size + block_space);
+            
+            if (start_y <= bar_height) {
+                // Tính vị trí trong cột (0 ở chân, 1 ở đỉnh)
+                float position_ratio = (float)start_y / bar_height;
+                
+                // HIỆU ỨNG MỜ DẦN: chân mờ (0.2), đỉnh sáng hơn (0.5)
+                float brightness = 0.2f + position_ratio * 0.3f; // Giảm độ sáng
+                
+                // Điều chỉnh màu theo độ sáng
+                uint16_t block_color = adjust_brightness(column_color, brightness);
+                
+                draw_block(start_x, canvas_height_ - 1 - start_y, 
+                          block_x_size, block_y_size, column_color, bar_index);
+            }
+        }
+    }
+#endif
 }
 
 void LcdDisplay::draw_block(int x,int y,int block_x_size,int block_y_size,uint16_t color,int bar_index){
@@ -2218,6 +2288,137 @@ uint16_t LcdDisplay::get_bar_color(int x_pos) {
     return (r << 11) | (g << 5) | b;
 }
 
+#ifdef SPECTRUM_FALLING_FIREWORK_EFFECT_ENABLED
+// Chuyển đổi HSV sang RGB565
+uint16_t LcdDisplay::hsv_to_rgb565(float h, float s, float v) {
+    // Khởi tạo giá trị mặc định
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+    
+    // Đảm bảo h nằm trong [0, 1)
+    h = fmod(h, 1.0f);
+    if (h < 0.0f) h += 1.0f;
+    
+    // Giới hạn s và v trong [0, 1]
+    s = (s < 0.0f) ? 0.0f : (s > 1.0f) ? 1.0f : s;
+    v = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+    
+    int i = static_cast<int>(h * 6.0f);
+    float f = h * 6.0f - i;
+    float p = v * (1.0f - s);
+    float q = v * (1.0f - f * s);
+    float t = v * (1.0f - (1.0f - f) * s);
+    
+    switch (i % 6) {
+        case 0: r = v; g = t; b = p; break;
+        case 1: r = q; g = v; b = p; break;
+        case 2: r = p; g = v; b = t; break;
+        case 3: r = p; g = q; b = v; break;
+        case 4: r = t; g = p; b = v; break;
+        case 5: r = v; g = p; b = q; break;
+        default: r = v; g = t; b = p; break; // Thêm trường hợp mặc định
+    }
+    
+    // Chuyển đổi sang RGB565
+    uint8_t r8 = static_cast<uint8_t>(r * 31.0f);
+    uint8_t g8 = static_cast<uint8_t>(g * 63.0f);
+    uint8_t b8 = static_cast<uint8_t>(b * 31.0f);
+    
+    // Giới hạn giá trị
+    if (r8 > 31) r8 = 31;
+    if (g8 > 63) g8 = 63;
+    if (b8 > 31) b8 = 31;
+    
+    return (r8 << 11) | (g8 << 5) | b8;
+}
+
+// Điều chỉnh độ sáng của màu
+uint16_t LcdDisplay::adjust_brightness(uint16_t color, float brightness) {
+    if (brightness > 1.0f) brightness = 1.0f;
+    if (brightness < 0.0f) brightness = 0.0f;
+    
+    uint8_t r = (color >> 11) & 0x1F;
+    uint8_t g = (color >> 5) & 0x3F;
+    uint8_t b = color & 0x1F;
+
+    r = static_cast<uint8_t>(r * brightness);
+    g = static_cast<uint8_t>(g * brightness);
+    b = static_cast<uint8_t>(b * brightness);
+
+    if (r > 0x1F) r = 0x1F;
+    if (g > 0x3F) g = 0x3F;
+    if (b > 0x1F) b = 0x1F;
+
+    return (r << 11) | (g << 5) | b;
+}
+
+// Lấy màu cho cột với gradient từ trái sang phải
+uint16_t LcdDisplay::get_column_color(int column_index) {
+    uint32_t current_time = esp_timer_get_time() / 1000;
+    
+    // Tạo hiệu ứng màu thay đổi từ từ
+    float time_factor = (current_time % 10000) / 10000.0f; // Chu kỳ 10 giây
+    
+    // Tạo gradient từ đỏ -> vàng -> xanh lá -> xanh dương -> tím
+    float hue = fmod((column_index / 40.0f) + time_factor, 1.0f);
+    float saturation = 0.8f; // Độ bão hòa cao 0.9 
+    float value = 0.8f;      // Độ sáng cao 0.9
+    
+    return hsv_to_rgb565(hue, saturation, value);
+}
+
+// Lấy màu pháo hoa cho thanh rơi
+uint16_t LcdDisplay::get_firework_color(int column_index, int height_ratio) {
+    static uint32_t last_update = 0;
+    static uint16_t firework_colors[40] = {0};
+    
+    // Khởi tạo lần đầu
+    static bool initialized = false;
+    if (!initialized) {
+        for (int i = 0; i < 40; i++) {
+            firework_colors[i] = COLOR_BLUE;
+        }
+        initialized = true;
+    }
+    
+    uint32_t current_time = esp_timer_get_time() / 1000;
+    
+    // Cập nhật màu pháo hoa mỗi 50ms
+    if (current_time - last_update > 50) {
+        for (int i = 0; i < 40; i++) {
+            // Màu pháo hoa ngẫu nhiên nhưng đẹp (không quá tối)
+            uint8_t r = (esp_random() % 24) + 8;  // 8-31 (không quá tối)
+            uint8_t g = (esp_random() % 48) + 16; // 16-63
+            uint8_t b = (esp_random() % 24) + 8;  // 8-31
+            
+            firework_colors[i] = (r << 11) | (g << 5) | b;
+        }
+        last_update = current_time;
+    }
+    
+    // Điều chỉnh độ sáng theo tỷ lệ chiều cao (càng cao càng sáng)
+    float brightness = 0.3f + (height_ratio / 100.0f) * 0.7f;
+    return adjust_brightness(firework_colors[column_index], brightness);
+}
+#endif // SPECTRUM_FALLING_FIREWORK_EFFECT_ENABLED
+
+uint16_t LcdDisplay::get_random_color() {
+    // Tạo màu ngẫu nhiên SÁNG trong định dạng RGB565
+    // Đảm bảo màu sáng bằng cách giới hạn giá trị tối thiểu
+    
+    uint8_t r = (esp_random() % 16) + 16;  // 16-31 (không quá tối)
+    uint8_t g = (esp_random() % 32) + 32;  // 32-63 (sáng)
+    uint8_t b = (esp_random() % 16) + 16;  // 16-31 (không quá tối)
+    
+    // Ưu tiên màu sáng: tăng cường một thành phần màu
+    switch (esp_random() % 3) {
+        case 0: r = 31; break; // Đỏ sáng
+        case 1: g = 63; break; // Xanh lá sáng
+        case 2: b = 31; break; // Xanh dương sáng
+    }
+    
+    return (r << 11) | (g << 5) | b;
+}
+
 void LcdDisplay::DisplayQRCode(const uint8_t* qrcode, const char* text) {
     DisplayLockGuard lock(this);
     if (content_ == nullptr || qrcode == nullptr) {
@@ -2274,22 +2475,6 @@ void LcdDisplay::DisplayQRCode(const uint8_t* qrcode, const char* text) {
     ESP_LOGI(TAG, "Canvas w: %d, h: %d, text y pos: %d", canvas_width_, canvas_height_, text_pos_y);
     lv_area_t coords_text = {qr_pos_x, text_pos_y, canvas_width_ -1, canvas_height_ - 1};
     lv_draw_label(&layer, &label_dsc, &coords_text);
-
-    // lv_draw_label_dsc_t label_dsc;
-    // lv_draw_label_dsc_init(&label_dsc);
-    // label_dsc.align = LV_TEXT_ALIGN_CENTER;
-    // label_dsc.text = text != nullptr ? text : ip_address_.c_str();
-    // ESP_LOGI(TAG, "Drawing text: %s", label_dsc.text);
-    // label_dsc.color = lv_palette_main(LV_PALETTE_ORANGE);
-
-    // int canvas_w = lv_obj_get_width(canvas_);
-    // int canvas_h = lv_obj_get_height(canvas_);
-    // int th = lv_font_get_line_height(label_dsc.font);
-    // int32_t text_pos_y =  canvas_h - qr_pos_y + (qr_pos_y - th) / 2;
-    // ESP_LOGI(TAG, "Canvas w: %d, h: %d, text y pos: %d", canvas_w, canvas_h, text_pos_y);
-    // // lv_area_t coords_text = { 0, (canvas_h - 20), canvas_w, canvas_h};
-    // lv_area_t coords_text = { 0, (canvas_height_ - 20), canvas_width_, canvas_height_};
-    // lv_draw_label(&layer, &label_dsc, &coords_text);
     
     // Finish layer
     lv_canvas_finish_layer(canvas_, &layer);
