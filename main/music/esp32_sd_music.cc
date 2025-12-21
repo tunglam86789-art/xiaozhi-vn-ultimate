@@ -1298,11 +1298,16 @@ bool Esp32SdMusic::decodeAndPlayFile(const TrackInfo& track)
     auto codec   = Board::GetInstance().GetAudioCodec();
     auto& app    = Application::GetInstance();
 
-    if (!codec || !codec->output_enabled()) {
+    if (!codec) {
+        ESP_LOGE(TAG, "No audio codec available");
         fclose(fp);
         state_.store(PlayerState::Error);
-        ESP_LOGE(TAG, "Audio codec not available or output disabled");
         return false;
+    }
+
+    // Ensure audio output is enabled
+    if (!codec->output_enabled()) {
+        codec->EnableOutput(true);
     }
 
     const int INPUT_BUF = 8192;
