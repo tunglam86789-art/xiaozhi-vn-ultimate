@@ -51,8 +51,8 @@
 #define AUDIO_CODEC_ES7210_ADDR  ES7210_CODEC_DEFAULT_ADDR
 
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
-#define VOLUME_UP_BUTTON_GPIO   GPIO_NUM_40
-#define VOLUME_DOWN_BUTTON_GPIO GPIO_NUM_39
+#define VOLUME_UP_BUTTON_GPIO   GPIO_NUM_39
+#define VOLUME_DOWN_BUTTON_GPIO GPIO_NUM_40
 
 #define DISPLAY_SPI_SCLK_HZ     (80 * 1000 * 1000)
 #define DISPLAY_SPI_MODE        3
@@ -61,12 +61,12 @@
 #define DISPLAY_DC              GPIO_NUM_8
 #define DISPLAY_CS              GPIO_NUM_14
 #define DISPLAY_RES             GPIO_NUM_18
+#define DISPLAY_RES_LEVEL       0 // Active low
 #define DISPLAY_WIDTH           284
 #define DISPLAY_HEIGHT          240
 #define DISPLAY_SWAP_XY         true
 #define DISPLAY_MIRROR_X        false
 #define DISPLAY_MIRROR_Y        true
-#define BACKLIGHT_INVERT        false
 #define DISPLAY_RGB_ORDER       LCD_RGB_ELEMENT_ORDER_BGR
 #define DISPLAY_OFFSET_X        0
 #define DISPLAY_OFFSET_Y        0

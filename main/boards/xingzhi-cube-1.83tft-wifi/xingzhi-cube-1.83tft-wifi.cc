@@ -164,17 +164,18 @@ private:
         ESP_LOGD(TAG, "Install LCD driver");
         esp_lcd_panel_dev_config_t panel_config = {};
         panel_config.reset_gpio_num = DISPLAY_RES;
-        panel_config.flags.reset_active_high = 1;
+        panel_config.flags.reset_active_high = DISPLAY_RES_LEVEL;
         panel_config.rgb_ele_order = DISPLAY_RGB_ORDER;
         panel_config.bits_per_pixel = 16;
         ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io_, &panel_config, &panel_));
         ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_));
+        vTaskDelay(pdMS_TO_TICKS(100));
         ESP_ERROR_CHECK(esp_lcd_panel_init(panel_));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, true));
         ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_, DISPLAY_SWAP_XY));
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         esp_lcd_panel_disp_on_off(panel_, true);
-
+        
         display_ = new SpiLcdDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, 
             DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
