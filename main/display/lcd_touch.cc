@@ -80,6 +80,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         if (was_touching_ && !is_swiping_) {
             TouchGesture gesture = DetectSwipeGesture();
             if (gesture != TOUCH_GESTURE_NONE) {
+                release_timeout_us_ = TOUCH_SWIPE_RELEASE_TIMEOUT; // Extend release timeout to avoid immediate release handling
                 HandleTouchPress(current_x, current_y);
                 gesture_detected_ = true;
                 if (gesture_callback_) {
@@ -110,6 +111,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
             if (current_time - touch_end_time_ > release_timeout_us_) {
                 if (!gesture_detected_) HandleTouchRelease();
                 was_touching_ = false;
+                release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;
             }
         }
     }
@@ -142,7 +144,7 @@ void LcdTouch::HandleTouchRelease() {
         int64_t time_since_last_tap = current_time - last_tap_time_;
         
         // Check for double tap
-        if (time_since_last_tap < double_tap_window_us_ && last_tap_time_ > 0) {
+        if (time_since_last_tap < double_tap_window_us_ && time_since_last_tap > tap_timeout_us_ && last_tap_time_ > 0) {
             // Double tap detected
             ESP_LOGI(TAG, "Double tap at (%d, %d)", touch_start_x_, touch_start_y_);
             if (gesture_callback_) {

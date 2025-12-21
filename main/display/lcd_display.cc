@@ -1,4 +1,7 @@
-// managed_components\lvgl__lvgl\examples\widgets\canvas\lv_example_canvas_1.c
+/*
+Contributors: TienHuyIoT, VanThao, NguyenThoChung, DoHieu
+*/
+
 #include "lcd_display.h"
 #include "gif/lvgl_gif.h"
 #include "settings.h"
@@ -97,7 +100,6 @@ static int current_heights[BAR_COL_NUM] = {0};
 static float avg_power_spectrum[LCD_FFT_SIZE/2]={-25.0f};
 static uint32_t last_flash_time[BAR_COL_NUM] = {0};
 static uint16_t falling_colors[BAR_COL_NUM] = {COLOR_BLUE};
-
 // Define dark theme colors
 const ThemeColors DARK_THEME = {
     .background = DARK_BACKGROUND_COLOR,
@@ -198,6 +200,12 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
         .skip_unhandled_events = false,
     };
     esp_timer_create(&preview_timer_args, &preview_timer_);
+    
+    // Khởi tạo các biến hiệu ứng rơi
+    for (int i = 0; i < BAR_COL_NUM; i++) {
+        last_flash_time[i] = 0;
+        falling_colors[i] = COLOR_BLUE;
+    }
 }
 
 SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
@@ -419,6 +427,35 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
 
 LcdDisplay::~LcdDisplay() {
     SetPreviewImage(nullptr);
+
+    // Dừng task FFT trước
+    StopFFT();
+    
+    // Giải phóng bộ nhớ FFT
+    if (fft_real != nullptr) {
+        heap_caps_free(fft_real);
+        fft_real = nullptr;
+    }
+    if (fft_imag != nullptr) {
+        heap_caps_free(fft_imag);
+        fft_imag = nullptr;
+    }
+    if (hanning_window_float != nullptr) {
+        heap_caps_free(hanning_window_float);
+        hanning_window_float = nullptr;
+    }
+    if (audio_data_ != nullptr) {
+        heap_caps_free(audio_data_);
+        audio_data_ = nullptr;
+    }
+    if (frame_audio_data != nullptr) {
+        heap_caps_free(frame_audio_data);
+        frame_audio_data = nullptr;
+    }
+    if (final_pcm_data_fft != nullptr) {
+        heap_caps_free(final_pcm_data_fft);
+        final_pcm_data_fft = nullptr;
+    }
     
     // Clean up GIF controller
     if (gif_controller_) {
@@ -1205,31 +1242,40 @@ void LcdDisplay::SetMusicInfo(const char* song_name) {
 #endif
 }
 
-LcdDisplay::DisplaySourceType LcdDisplay::DetectSourceFromInfo() const {
+LcdDisplay::DisplaySourceType LcdDisplay::DetectSourceFromInfo() {
     std::string s = music_info_;
     for (auto &c : s) c = tolower(c);
 
     // 1) Nhận diện Radio trước
     if (s.find("radio") != std::string::npos ||
-        s.find("fm")    != std::string::npos)
+        s.find("fm")    != std::string::npos) {
+        ESP_LOGI(TAG, "Detected source: RADIO from info: %s", music_info_.c_str());
         return DisplaySourceType::RADIO;
+    }
 
     // 2) Nhận diện Online trước
-	if (s.rfind("ONLINE:", 0) == 0)
-    return DisplaySourceType::ONLINE;
+	if (s.rfind("ONLINE:", 0) == 0) {
+        ESP_LOGI(TAG, "Detected source: ONLINE from info: %s", music_info_.c_str());
+        return DisplaySourceType::ONLINE;
+    }
 
     if (s.find("online") != std::string::npos ||
         s.find("http")   != std::string::npos ||
         s.find("rtmp")   != std::string::npos ||
-        s.find("m3u")    != std::string::npos)
+        s.find("m3u")    != std::string::npos) {
+        ESP_LOGI(TAG, "Detected source: ONLINE from info: %s", music_info_.c_str());
         return DisplaySourceType::ONLINE;
+    }
 
     // 3) SD-card (chỉ khi REAL PLAYING)
     Esp32SdMusic* sd = get_sd_player();
-    if (sd && sd->getState() == Esp32SdMusic::PlayerState::Playing)
+    if (sd && sd->getState() == Esp32SdMusic::PlayerState::Playing) {
+        ESP_LOGI(TAG, "Detected source: SD_CARD from info: %s", music_info_.c_str());
         return DisplaySourceType::SD_CARD;
+    }
 
-    // 4) Default
+    // 4) Default to NONE
+    ESP_LOGI(TAG, "Detected source: NONE from info: %s", music_info_.c_str());
     return DisplaySourceType::NONE;
 }
 
@@ -1968,17 +2014,19 @@ void LcdDisplay::draw_spectrum(float *power_spectrum,int fft_size){
 
     for (int bin = 0; bin < bartotal; bin++) {
         int start = bin * (fft_size / bartotal);
-        int end = (bin+1) * (fft_size / bartotal);
+        int end = (bin + 1) * (fft_size / bartotal);
         magnitude[bin] = 0;
-        int count=0;
+        int count = 0;
         for (int k = start; k < end; k++) {
             magnitude[bin] += sqrt(power_spectrum[k]);
             count++;
         }
-        if(count>0){
+        if (count > 0) {
             magnitude[bin] /= count;
         }
-        if (magnitude[bin] > max_magnitude) max_magnitude = magnitude[bin];
+        if (magnitude[bin] > max_magnitude) {
+            max_magnitude = magnitude[bin];
+        }
     }
 
     magnitude[1]=magnitude[1]*0.6;
@@ -1994,7 +2042,8 @@ void LcdDisplay::draw_spectrum(float *power_spectrum,int fft_size){
         } else {
             magnitude[bin] = MIN_DB;
         }
-        if (magnitude[bin] > max_magnitude) max_magnitude = magnitude[bin];
+        // if (magnitude[bin] > max_magnitude) max_magnitude = magnitude[bin];
+        magnitude[bin] = std::max(MIN_DB, std::min(MAX_DB, magnitude[bin]));
     }
 
     std::fill_n(canvas_buffer_, canvas_width_ * canvas_height_, COLOR_BLACK);
@@ -2004,18 +2053,9 @@ void LcdDisplay::draw_spectrum(float *power_spectrum,int fft_size){
         x_pos = canvas_width_ / bartotal * (k - 1);
         float mag = (magnitude[k] - MIN_DB) / (MAX_DB - MIN_DB);
         mag = std::max(0.0f, std::min(1.0f, mag));
-#ifndef SPECTRUM_FALLING_FIREWORK_EFFECT_ENABLED
         bar_height = int(mag * (bar_max_height));
         int color = get_bar_color(k);
         draw_bar(x_pos, y_pos, bar_width, bar_height, color, k - 1);
-#else
-        // Thêm hiệu ứng nhảy theo nhạc
-        float bounce = sin(esp_timer_get_time() * 0.001f + k * 0.3f) * 0.05f + 1.0f;
-        bar_height = int(mag * bar_max_height * bounce);
-        // Vẽ cột với màu gradient và hiệu ứng mờ dần
-        draw_bar(x_pos, y_pos, bar_width, bar_height, 0, k - 1);
-#endif
-        
     }
 }
 
@@ -2086,7 +2126,6 @@ void LcdDisplay::processAudioData() {
 }
 
 void LcdDisplay::draw_bar(int x,int y,int bar_width,int bar_height,uint16_t color,int bar_index){
-#ifndef SPECTRUM_FALLING_FIREWORK_EFFECT_ENABLED
     const int block_space = 2;
     const int block_x_size = bar_width - block_space;
     const int block_y_size = 4;
@@ -2117,70 +2156,6 @@ void LcdDisplay::draw_bar(int x,int y,int bar_width,int bar_height,uint16_t colo
         int start_y = j * (block_y_size + block_space);
         draw_block(start_x, canvas_height_ - start_y, block_x_size, block_y_size, color, bar_index);
     }
-#else
-    const int block_space = 2;
-    const int block_x_size = bar_width - block_space;
-    const int block_y_size = 4;
-    
-    int blocks_per_col = (bar_height / (block_y_size + block_space));
-    int start_x = (block_x_size + block_space) / 2 + x;
-    
-    uint32_t current_time = esp_timer_get_time() / 1000;
-    
-    // Lấy màu cho cột (gradient thay đổi từ trái sang phải)
-    uint16_t column_color = get_column_color(bar_index);
-    
-    if (current_heights[bar_index] < bar_height) {
-        // Thanh được đẩy lên cao nhất - sử dụng màu xanh biển SÁNG
-        current_heights[bar_index] = bar_height;
-        falling_colors[bar_index] = COLOR_BLUE; // Màu xanh khi lên cao nhất
-    } else {
-        // Thanh đang rơi xuống
-        int fall_speed = 2;
-        current_heights[bar_index] = current_heights[bar_index] - fall_speed;
-        
-        // Kiểm tra nếu cần nhấp nháy màu ngẫu nhiên
-        if (current_heights[bar_index] > (block_y_size + block_space)) {
-            // Nhấp nháy mỗi 80ms (nhanh hơn)
-            if (current_time - last_flash_time[bar_index] > 80) {
-                // TĂNG ĐỘ SÁNG cho thanh rơi
-                falling_colors[bar_index] = get_random_color();
-                last_flash_time[bar_index] = current_time;
-            }
-            
-            // Vẽ thanh rơi với độ sáng CAO (0.8-1.0)
-            // Không áp dụng hiệu ứng mờ dần cho thanh rơi
-            draw_block(start_x, canvas_height_ - current_heights[bar_index], 
-                      block_x_size, block_y_size, falling_colors[bar_index], bar_index);
-        }
-    }
-    
-    // Vẽ phần thanh cố định (phần đế) với màu xanh biển MỜ
-    draw_block(start_x, canvas_height_ - 1, block_x_size, block_y_size, 
-               adjust_brightness(COLOR_BLUE, 0.4f), bar_index);
-    
-    // Vẽ các khối của cột sóng với hiệu ứng mờ dần TỪ CHÂN LÊN ĐỈNH
-    // (chân mờ, đỉnh sáng hơn một chút nhưng vẫn mờ)
-    if (bar_height > 0 && blocks_per_col > 0) {
-        for (int j = 1; j <= blocks_per_col; j++) {
-            int start_y = j * (block_y_size + block_space);
-            
-            if (start_y <= bar_height) {
-                // Tính vị trí trong cột (0 ở chân, 1 ở đỉnh)
-                float position_ratio = (float)start_y / bar_height;
-                
-                // HIỆU ỨNG MỜ DẦN: chân mờ (0.2), đỉnh sáng hơn (0.5)
-                float brightness = 0.2f + position_ratio * 0.3f; // Giảm độ sáng
-                
-                // Điều chỉnh màu theo độ sáng
-                uint16_t block_color = adjust_brightness(column_color, brightness);
-                
-                draw_block(start_x, canvas_height_ - 1 - start_y, 
-                          block_x_size, block_y_size, column_color, bar_index);
-            }
-        }
-    }
-#endif
 }
 
 void LcdDisplay::draw_block(int x,int y,int block_x_size,int block_y_size,uint16_t color,int bar_index){
@@ -2287,119 +2262,6 @@ uint16_t LcdDisplay::get_bar_color(int x_pos) {
 
     return (r << 11) | (g << 5) | b;
 }
-
-#ifdef SPECTRUM_FALLING_FIREWORK_EFFECT_ENABLED
-// Chuyển đổi HSV sang RGB565
-uint16_t LcdDisplay::hsv_to_rgb565(float h, float s, float v) {
-    // Khởi tạo giá trị mặc định
-    float r = 0.0f, g = 0.0f, b = 0.0f;
-    
-    // Đảm bảo h nằm trong [0, 1)
-    h = fmod(h, 1.0f);
-    if (h < 0.0f) h += 1.0f;
-    
-    // Giới hạn s và v trong [0, 1]
-    s = (s < 0.0f) ? 0.0f : (s > 1.0f) ? 1.0f : s;
-    v = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
-    
-    int i = static_cast<int>(h * 6.0f);
-    float f = h * 6.0f - i;
-    float p = v * (1.0f - s);
-    float q = v * (1.0f - f * s);
-    float t = v * (1.0f - (1.0f - f) * s);
-    
-    switch (i % 6) {
-        case 0: r = v; g = t; b = p; break;
-        case 1: r = q; g = v; b = p; break;
-        case 2: r = p; g = v; b = t; break;
-        case 3: r = p; g = q; b = v; break;
-        case 4: r = t; g = p; b = v; break;
-        case 5: r = v; g = p; b = q; break;
-        default: r = v; g = t; b = p; break; // Thêm trường hợp mặc định
-    }
-    
-    // Chuyển đổi sang RGB565
-    uint8_t r8 = static_cast<uint8_t>(r * 31.0f);
-    uint8_t g8 = static_cast<uint8_t>(g * 63.0f);
-    uint8_t b8 = static_cast<uint8_t>(b * 31.0f);
-    
-    // Giới hạn giá trị
-    if (r8 > 31) r8 = 31;
-    if (g8 > 63) g8 = 63;
-    if (b8 > 31) b8 = 31;
-    
-    return (r8 << 11) | (g8 << 5) | b8;
-}
-
-// Điều chỉnh độ sáng của màu
-uint16_t LcdDisplay::adjust_brightness(uint16_t color, float brightness) {
-    if (brightness > 1.0f) brightness = 1.0f;
-    if (brightness < 0.0f) brightness = 0.0f;
-    
-    uint8_t r = (color >> 11) & 0x1F;
-    uint8_t g = (color >> 5) & 0x3F;
-    uint8_t b = color & 0x1F;
-
-    r = static_cast<uint8_t>(r * brightness);
-    g = static_cast<uint8_t>(g * brightness);
-    b = static_cast<uint8_t>(b * brightness);
-
-    if (r > 0x1F) r = 0x1F;
-    if (g > 0x3F) g = 0x3F;
-    if (b > 0x1F) b = 0x1F;
-
-    return (r << 11) | (g << 5) | b;
-}
-
-// Lấy màu cho cột với gradient từ trái sang phải
-uint16_t LcdDisplay::get_column_color(int column_index) {
-    uint32_t current_time = esp_timer_get_time() / 1000;
-    
-    // Tạo hiệu ứng màu thay đổi từ từ
-    float time_factor = (current_time % 10000) / 10000.0f; // Chu kỳ 10 giây
-    
-    // Tạo gradient từ đỏ -> vàng -> xanh lá -> xanh dương -> tím
-    float hue = fmod((column_index / 40.0f) + time_factor, 1.0f);
-    float saturation = 0.8f; // Độ bão hòa cao 0.9 
-    float value = 0.8f;      // Độ sáng cao 0.9
-    
-    return hsv_to_rgb565(hue, saturation, value);
-}
-
-// Lấy màu pháo hoa cho thanh rơi
-uint16_t LcdDisplay::get_firework_color(int column_index, int height_ratio) {
-    static uint32_t last_update = 0;
-    static uint16_t firework_colors[40] = {0};
-    
-    // Khởi tạo lần đầu
-    static bool initialized = false;
-    if (!initialized) {
-        for (int i = 0; i < 40; i++) {
-            firework_colors[i] = COLOR_BLUE;
-        }
-        initialized = true;
-    }
-    
-    uint32_t current_time = esp_timer_get_time() / 1000;
-    
-    // Cập nhật màu pháo hoa mỗi 50ms
-    if (current_time - last_update > 50) {
-        for (int i = 0; i < 40; i++) {
-            // Màu pháo hoa ngẫu nhiên nhưng đẹp (không quá tối)
-            uint8_t r = (esp_random() % 24) + 8;  // 8-31 (không quá tối)
-            uint8_t g = (esp_random() % 48) + 16; // 16-63
-            uint8_t b = (esp_random() % 24) + 8;  // 8-31
-            
-            firework_colors[i] = (r << 11) | (g << 5) | b;
-        }
-        last_update = current_time;
-    }
-    
-    // Điều chỉnh độ sáng theo tỷ lệ chiều cao (càng cao càng sáng)
-    float brightness = 0.3f + (height_ratio / 100.0f) * 0.7f;
-    return adjust_brightness(firework_colors[column_index], brightness);
-}
-#endif // SPECTRUM_FALLING_FIREWORK_EFFECT_ENABLED
 
 uint16_t LcdDisplay::get_random_color() {
     // Tạo màu ngẫu nhiên SÁNG trong định dạng RGB565

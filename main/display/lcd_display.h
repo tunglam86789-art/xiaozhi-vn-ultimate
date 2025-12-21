@@ -11,7 +11,6 @@
 #include <atomic>
 #include <memory>
 
-// #define SPECTRUM_FALLING_FIREWORK_EFFECT_ENABLED
 #define PREVIEW_IMAGE_DURATION_MS 5000
 
 // Theme color structure
@@ -76,12 +75,6 @@ protected:
     void draw_spectrum(float *power_spectrum, int fft_size);
     void draw_bar(int x, int y, int bar_width, int bar_height, uint16_t color, int bar_index);
     void draw_block(int x, int y, int block_x_size, int block_y_size, uint16_t color, int bar_index);
-#ifdef SPECTRUM_FALLING_FIREWORK_EFFECT_ENABLED
-    uint16_t get_column_color(int column_index);
-    uint16_t adjust_brightness(uint16_t color, float brightness);
-    uint16_t hsv_to_rgb565(float h, float s, float v);
-    uint16_t get_firework_color(int column_index, int height_ratio);
-#endif
     uint16_t get_random_color();
 
     // LVGL variables for FFT canvas or QR code
@@ -91,7 +84,6 @@ protected:
     uint16_t* canvas_buffer_ = nullptr;
     void create_canvas(int32_t status_bar_height = 0);
 	
-	// --- UI ph�t nh?c tr�n canvas ---
 	lv_obj_t* music_root_        = nullptr;
 	lv_obj_t* music_date_label_  = nullptr;
 	lv_obj_t* music_title_label_ = nullptr;
@@ -114,19 +106,10 @@ protected:
     LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width, int height);
     
 public:
-	// Lo?i ngu?n ph�t nh?c
-    enum class DisplaySourceType {
-        NONE = 0,
-        SD_CARD,
-        ONLINE,
-        RADIO
-    };
-    // H�m nh?n di?n source
-    DisplaySourceType DetectSourceFromInfo() const;
-
     ~LcdDisplay();
     virtual void SetEmotion(const char* emotion) override;
     virtual void SetMusicInfo(const char* song_name) override;
+    DisplaySourceType DetectSourceFromInfo() override;
     virtual void SetChatMessage(const char* role, const char* content) override; 
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
 

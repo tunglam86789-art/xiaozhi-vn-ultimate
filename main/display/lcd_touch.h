@@ -7,6 +7,9 @@
 #include <esp_lcd_touch.h>
 #include <functional>
 
+#define TOUCH_RELEASE_TIMEOUT 50000 // 50ms
+#define TOUCH_SWIPE_RELEASE_TIMEOUT 500000 // 500ms
+
 // Touch gesture types
 enum TouchGesture {
     TOUCH_GESTURE_NONE = 0,
@@ -37,7 +40,7 @@ protected:
     int64_t tap_timeout_us_ = 200000;       // Maximum time for tap (200ms)
     int64_t double_tap_window_us_ = 500000; // Window for double tap (500ms)
     int64_t long_press_time_us_ = 800000;   // Time for long press (800ms)
-    int64_t release_timeout_us_ = 50000;    // Time to confirm release (50ms)
+    int64_t release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;    // Time to confirm release (50ms)
     
     // Touch state tracking
     bool is_touching_ = false;

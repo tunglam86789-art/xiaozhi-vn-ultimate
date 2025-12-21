@@ -1018,10 +1018,10 @@ bool Esp32SdMusic::play()
 
     joinPlaybackThreadWithTimeout();
 
-    auto& app = Application::GetInstance();
-    app.StopListening();
-    app.GetAudioService().EnableWakeWordDetection(false);
-    app.SetDeviceState(kDeviceStateSpeaking);
+    // auto& app = Application::GetInstance();
+    // app.StopListening();
+    // app.GetAudioService().EnableWakeWordDetection(false);
+    // app.SetDeviceState(kDeviceStateSpeaking);
 
     {
         std::lock_guard<std::mutex> lk(state_mutex_);
@@ -1276,6 +1276,7 @@ void Esp32SdMusic::playbackThreadFunc()
 bool Esp32SdMusic::decodeAndPlayFile(const TrackInfo& track)
 {
     if (!mp3_decoder_initialized_ && !InitializeMp3Decoder()) {
+        ESP_LOGE(TAG, "MP3 decoder not initialized");
         state_.store(PlayerState::Error);
         return false;
     }
@@ -1300,6 +1301,7 @@ bool Esp32SdMusic::decodeAndPlayFile(const TrackInfo& track)
     if (!codec || !codec->output_enabled()) {
         fclose(fp);
         state_.store(PlayerState::Error);
+        ESP_LOGE(TAG, "Audio codec not available or output disabled");
         return false;
     }
 

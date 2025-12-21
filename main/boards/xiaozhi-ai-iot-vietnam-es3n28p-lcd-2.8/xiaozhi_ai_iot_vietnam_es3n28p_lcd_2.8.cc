@@ -208,25 +208,52 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
                           DISPLAY_SWAP_XY, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
 
     touch_->SetGestureCallback([this](TouchGesture gesture, int16_t x, int16_t y) {
+      ESP_LOGI(TAG, "Touch gesture detected: %d at (%d, %d)", static_cast<int>(gesture), x, y);
       switch (gesture) {
         case TOUCH_GESTURE_SWIPE_RIGHT:
             {
-              auto& board = Board::GetInstance();
-              auto backlight = board.GetBacklight();
-              int new_brightness = backlight->brightness();
-              
-              // Swipe right - increase brightness
-              new_brightness += 10;
-              if (new_brightness > 100) new_brightness = 100;
-              ESP_LOGI(TAG, "👉 Swipe RIGHT - Brightness: %d → %d", backlight->brightness(), new_brightness);
-              
-              backlight->SetBrightness(new_brightness);
-              auto display = board.GetDisplay();
-              display->ShowNotification("Brightness: " + std::to_string(new_brightness));
+              ESP_LOGI(TAG, "👉 Swipe RIGHT");
+              Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+              ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
+              if (source == Display::DisplaySourceType::SD_CARD) {
+                  ESP_LOGI(TAG, "Play Next track");
+                  auto& app = Application::GetInstance();
+                  auto sd_music = app.GetSdMusic();
+                  if (sd_music) {
+                    sd_music->stop();
+                    sd_music->next();
+                  }
+              } else {
+                auto& board = Board::GetInstance();
+                auto backlight = board.GetBacklight();
+                int new_brightness = backlight->brightness();
+                
+                // Swipe right - increase brightness
+                new_brightness += 10;
+                if (new_brightness > 100) new_brightness = 100;
+                ESP_LOGI(TAG, "Brightness: %d → %d", backlight->brightness(), new_brightness);
+                
+                backlight->SetBrightness(new_brightness);
+                auto display = board.GetDisplay();
+                display->ShowNotification("Brightness: " + std::to_string(new_brightness));
+              }
             }
             break;
         case TOUCH_GESTURE_SWIPE_LEFT:
             {
+              ESP_LOGI(TAG, "👈 Swipe LEFT");
+              Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+              ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
+              if (source == Display::DisplaySourceType::SD_CARD) {
+                  ESP_LOGI(TAG, "Play Previous track");
+                  auto& app = Application::GetInstance();
+                  auto sd_music = app.GetSdMusic();
+                  if (sd_music) {
+                    sd_music->stop();
+                    sd_music->prev();
+                  }
+                  break;
+              }
               auto& board = Board::GetInstance();
               auto backlight = board.GetBacklight();
               int new_brightness = backlight->brightness();
@@ -234,7 +261,7 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
               // Swipe left - decrease brightness
               new_brightness -= 10;
               if (new_brightness <= 0) new_brightness = 0;  // Min 5% to keep visible
-              ESP_LOGI(TAG, "👈 Swipe LEFT - Brightness: %d → %d", backlight->brightness(), new_brightness);
+              ESP_LOGI(TAG, "Brightness: %d → %d", backlight->brightness(), new_brightness);
               
               backlight->SetBrightness(new_brightness);
               auto display = board.GetDisplay();
@@ -281,8 +308,19 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
         case TOUCH_GESTURE_LONG_PRESS:
             ESP_LOGI(TAG, "Long Press at (%d, %d)", x, y);
             {
-              GetAudioCodec()->SetOutputVolume(0);
-              GetDisplay()->ShowNotification(Lang::Strings::MUTED);
+              Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+              ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
+              if (source == Display::DisplaySourceType::NONE) {
+                auto& app = Application::GetInstance();
+                auto sd_music = app.GetSdMusic();
+                if (sd_music) {
+                  ESP_LOGI(TAG, "Toggle Play/Pause");
+                  sd_music->play();
+                }
+              } else {
+                GetAudioCodec()->SetOutputVolume(0);
+                GetDisplay()->ShowNotification(Lang::Strings::MUTED);
+              }
             }
             break;
         default:
