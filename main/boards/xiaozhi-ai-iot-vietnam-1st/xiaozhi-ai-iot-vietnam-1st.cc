@@ -87,8 +87,8 @@ public:
             return;
         }
 
-        LV_IMG_DECLARE(lv_img_ostb_logo);
-        lv_img_set_src(img, &lv_img_ostb_logo);
+        LV_IMG_DECLARE(xiaozhi_ai_iot_vietnam_logo);
+        lv_img_set_src(img, &xiaozhi_ai_iot_vietnam_logo);
         if (lv_img_get_src(img) == NULL) {
             ESP_LOGE("LVGL", "Failed to load image from /spiffs/logo.png");
             lv_obj_del(img);
@@ -98,7 +98,7 @@ public:
         lv_obj_center(img);
         ESP_LOGI("LVGL", "load image from logo.png");
 
-        const TickType_t end_time = xTaskGetTickCount() + pdMS_TO_TICKS(2000);
+        const TickType_t end_time = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
         while (xTaskGetTickCount() < end_time) {
             lv_task_handler();
             vTaskDelay(pdMS_TO_TICKS(10));
