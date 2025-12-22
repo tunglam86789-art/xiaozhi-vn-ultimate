@@ -155,32 +155,25 @@ private:
     }
 
     void InitializePowerSaveTimer() {      
-        power_save_timer_ = new PowerSaveTimer(-1, 300, 300);
+        power_save_timer_ = new PowerSaveTimer(-1, SECONDS_TO_SLEEP_MODE, SECONDS_TO_SHUTDOWN);
         power_save_timer_->OnEnterSleepMode([this]() {
             ESP_LOGI(TAG, "Enabling sleep mode");
             display_->SetChatMessage("system", "");
             display_->SetEmotion("sleepy");
-            //GetBacklight()->SetBrightness(0);
-
-            // 发送显示关闭命令(0x28)和睡眠进入命令(0x10)
-            esp_lcd_panel_io_tx_param(panel_io_, 0x28, NULL, 0);
-            esp_lcd_panel_io_tx_param(panel_io_, 0x10, NULL, 0);
-            pm_low_power_shutdown();
+            GetBacklight()->SetBrightness(1);
         });
         power_save_timer_->OnExitSleepMode([this]() {
             display_->SetChatMessage("system", "");
             display_->SetEmotion("neutral");
 
-            // 发送睡眠退出命令(0x11)和显示开启命令(0x29)
+            // Send the sleep exit command (0x11) and the display on command (0x29).
             esp_lcd_panel_io_tx_param(panel_io_, 0x11, NULL, 0);
             esp_lcd_panel_io_tx_param(panel_io_, 0x29, NULL, 0);
             GetBacklight()->RestoreBrightness();
-            gpio_set_level(DISPLAY_BACKLIGHT_PIN, 1);
         });
         power_save_timer_->OnShutdownRequest([this]() {
             ESP_LOGI(TAG, "Shutting down");
-
-            // 发送显示关闭命令(0x28)和睡眠进入命令(0x10)
+            // Send the display off command (0x28) and the sleep enter command (0x10).
             esp_lcd_panel_io_tx_param(panel_io_, 0x28, NULL, 0);
             esp_lcd_panel_io_tx_param(panel_io_, 0x10, NULL, 0);
             pm_low_power_shutdown();
