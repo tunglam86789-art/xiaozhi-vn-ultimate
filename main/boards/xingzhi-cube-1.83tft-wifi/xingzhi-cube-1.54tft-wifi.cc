@@ -1,7 +1,5 @@
 #include "wifi_board.h"
-#include "codecs/box_audio_codec.h"
-#include "display/display.h"
-#include "display/emote_display.h"
+#include "codecs/no_audio_codec.h"
 #include "display/lcd_display.h"
 #ifdef CONFIG_SD_CARD_MMC_INTERFACE
 #include "sdmmc.h"
@@ -19,22 +17,19 @@
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
-#include <driver/i2c_master.h>
-#include <driver/spi_common.h>
 #include <wifi_station.h>
 
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
 
-#define TAG "XINGZHI_CUBE_1_83TFT_WIFI"
+#define TAG "XINGZHI_CUBE_1_54TFT_WIFI"
 
-class XINGZHI_CUBE_1_83TFT_WIFI : public WifiBoard {
+class XINGZHI_CUBE_1_54TFT_WIFI : public WifiBoard {
 private:
-    i2c_master_bus_handle_t i2c_bus_;
-    Display* display_;
     Button boot_button_;
     Button volume_up_button_;
     Button volume_down_button_;
+    SpiLcdDisplay* display_;
     PowerSaveTimer* power_save_timer_;
     PowerManager* power_manager_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
@@ -74,23 +69,6 @@ private:
             esp_deep_sleep_start();
         });
         power_save_timer_->SetEnabled(true);
-    }
-
-    void InitializeI2c() {
-        // Initialize I2C peripheral
-        i2c_master_bus_config_t i2c_bus_cfg = {
-            .i2c_port   = AUDIO_CODEC_I2C_NUM,
-            .sda_io_num = AUDIO_CODEC_I2C_SDA_PIN,
-            .scl_io_num = AUDIO_CODEC_I2C_SCL_PIN,
-            .clk_source = I2C_CLK_SRC_DEFAULT,
-            .glitch_ignore_cnt = 7,
-            .intr_priority = 0,
-            .trans_queue_depth = 0,
-            .flags = {
-                .enable_internal_pullup = 1,
-            },
-        };
-        ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
     }
 
     void InitializeSpi() {
@@ -154,8 +132,8 @@ private:
         esp_lcd_panel_io_spi_config_t io_config = {};
         io_config.cs_gpio_num = DISPLAY_CS;
         io_config.dc_gpio_num = DISPLAY_DC;
-        io_config.spi_mode = DISPLAY_SPI_MODE;
-        io_config.pclk_hz = DISPLAY_SPI_SCLK_HZ;
+        io_config.spi_mode = 3;
+        io_config.pclk_hz = 80 * 1000 * 1000;
         io_config.trans_queue_depth = 10;
         io_config.lcd_cmd_bits = 8;
         io_config.lcd_param_bits = 8;
@@ -164,30 +142,26 @@ private:
         ESP_LOGD(TAG, "Install LCD driver");
         esp_lcd_panel_dev_config_t panel_config = {};
         panel_config.reset_gpio_num = DISPLAY_RES;
-        panel_config.flags.reset_active_high = DISPLAY_RES_LEVEL;
-        panel_config.rgb_ele_order = DISPLAY_RGB_ORDER;
+        panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
         panel_config.bits_per_pixel = 16;
         ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io_, &panel_config, &panel_));
         ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_));
-        vTaskDelay(pdMS_TO_TICKS(100));
         ESP_ERROR_CHECK(esp_lcd_panel_init(panel_));
-        ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, true));
         ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_, DISPLAY_SWAP_XY));
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
-        esp_lcd_panel_disp_on_off(panel_, true);
-        
+        ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, true));
+
         display_ = new SpiLcdDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, 
             DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
 public:
-    XINGZHI_CUBE_1_83TFT_WIFI() :
+    XINGZHI_CUBE_1_54TFT_WIFI() :
         boot_button_(BOOT_BUTTON_GPIO),
         volume_up_button_(VOLUME_UP_BUTTON_GPIO),
         volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
         InitializePowerManager();
         InitializePowerSaveTimer();
-        InitializeI2c();
         InitializeSpi();
         InitializeButtons();
         InitializeSt7789Display();
@@ -195,19 +169,8 @@ public:
     }
 
     virtual AudioCodec* GetAudioCodec() override {
-        static BoxAudioCodec audio_codec(
-            i2c_bus_, 
-            AUDIO_INPUT_SAMPLE_RATE, 
-            AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_GPIO_MCLK, 
-            AUDIO_I2S_GPIO_BCLK, 
-            AUDIO_I2S_GPIO_WS, 
-            AUDIO_I2S_GPIO_DOUT, 
-            AUDIO_I2S_GPIO_DIN,
-            AUDIO_CODEC_PA_PIN, 
-            AUDIO_CODEC_ES8311_ADDR, 
-            AUDIO_CODEC_ES7210_ADDR, 
-            AUDIO_INPUT_REFERENCE);
+        static NoAudioCodecSimplex audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
+            AUDIO_I2S_SPK_GPIO_BCLK, AUDIO_I2S_SPK_GPIO_LRCK, AUDIO_I2S_SPK_GPIO_DOUT, AUDIO_I2S_MIC_GPIO_SCK, AUDIO_I2S_MIC_GPIO_WS, AUDIO_I2S_MIC_GPIO_DIN);
         return &audio_codec;
     }
 
@@ -274,4 +237,4 @@ public:
 #endif
 };
 
-DECLARE_BOARD(XINGZHI_CUBE_1_83TFT_WIFI);
+DECLARE_BOARD(XINGZHI_CUBE_1_54TFT_WIFI);
