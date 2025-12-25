@@ -70,7 +70,7 @@ public:
     // For rotation display
     virtual bool SetRotation(int rotation_degree, bool save_setting) { return false; }
     
-    // --- [H�M M?I CHO IDLE SCREEN] ---
+    // For weather idle card
     virtual void ShowIdleCard(const IdleCardInfo& info) {}
     virtual void HideIdleCard() {}
 

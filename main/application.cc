@@ -680,22 +680,20 @@ void Application::MainEventLoop() {
                 SystemInfo::PrintHeapStats();
             }
             if (device_state_ == kDeviceStateIdle) {
-                // Cập nhật đồng hồ mỗi giây
+                // Update the clock every second
                 UpdateIdleDisplay();
 
 #if CONFIG_ENABLE_WEATHER_FEATURE
-                // Logic lấy thời tiết: Gọi tại giây thứ 5 sau khi boot HOẶC mỗi 30 phút (1800 giây)
+                // Weather fetch logic: call at the 5th second after boot OR every 30 minutes (1800 seconds)
                 if (clock_ticks_ == 5 || clock_ticks_ % 1800 == 0) {
                     ESP_LOGI(TAG, "Khoi tao Task lay thoi tiet...");
-                    
-                    // Sử dụng xTaskCreate thay vì std::thread để cấp phát Stack lớn hơn (8192 bytes)
                     xTaskCreate([](void* arg) {
                         auto& weather_service = WeatherService::GetInstance();
                         if (weather_service.FetchWeatherData()) {
                             Application* app = static_cast<Application*>(arg);
                             app->UpdateIdleDisplay();
                         }
-                        vTaskDelete(NULL);       // Tự hủy Task sau khi xong để giải phóng Ram
+                        vTaskDelete(NULL);
                     }, "weather_task", 8192, this, 5, NULL);
                 }
 #endif
@@ -1099,8 +1097,7 @@ void Application::PlaySound(const std::string_view& sound) {
     audio_service_.PlaySound(sound);
 }
 
-
-// --- [DienBien Mod]- CẬP NHẬT MÀN HÌNH THỜI TIẾT----
+// --- [DienBien Mod]- WEATHER SCREEN UPDATE----
 void Application::UpdateIdleDisplay() {
 #if CONFIG_ENABLE_WEATHER_FEATURE
     auto& weather_service = WeatherService::GetInstance();
@@ -1112,8 +1109,8 @@ void Application::UpdateIdleDisplay() {
     time_t now = time(nullptr);
     struct tm tm_buf;
     if (localtime_r(&now, &tm_buf) != nullptr) {
-        char buffer[32];
-        strftime(buffer, sizeof(buffer), "%H:%M", &tm_buf);
+        char buffer[35];
+        strftime(buffer, sizeof(buffer), "%H:%M:%S", &tm_buf);
         card.time_text = buffer;
         
         strftime(buffer, sizeof(buffer), "%d-%m-%Y", &tm_buf);
@@ -1155,4 +1152,4 @@ void Application::UpdateIdleDisplay() {
     display->ShowIdleCard(card);
 #endif
 }
-// --- [DienBien Mod]- END CẬP NHẬT MÀN HÌNH THỜI TIẾT----
+// --- [DienBien Mod]- END WEATHER SCREEN UPDATE----

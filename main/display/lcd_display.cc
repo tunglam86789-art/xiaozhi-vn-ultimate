@@ -1,5 +1,5 @@
 /*
-Contributors: TienHuyIoT, VanThao, NguyenThoChung, DoHieu
+Contributors: Xiaozhi AI-IoT Vietnam Team
 */
 
 #include "lcd_display.h"
@@ -231,7 +231,7 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     };
     esp_timer_create(&preview_timer_args, &preview_timer_);
     
-    // Khởi tạo các biến hiệu ứng rơi
+     // Initialize variables for the falling effect
     for (int i = 0; i < BAR_COL_NUM; i++) {
         last_flash_time[i] = 0;
         falling_colors[i] = COLOR_BLUE;

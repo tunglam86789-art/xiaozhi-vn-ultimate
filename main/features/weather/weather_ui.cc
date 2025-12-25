@@ -190,7 +190,7 @@ void WeatherUI::ShowIdleCard(const IdleCardInfo& info) {
     // Show panel
     lv_obj_remove_flag(idle_panel_, LV_OBJ_FLAG_HIDDEN);
     
-    ESP_LOGI(TAG, "Weather card shown: %s, %s", info.city.c_str(), info.temperature_text.c_str());
+    // ESP_LOGI(TAG, "Weather card shown: %s, %s", info.city.c_str(), info.temperature_text.c_str());
 }
 
 void WeatherUI::HideIdleCard() {
