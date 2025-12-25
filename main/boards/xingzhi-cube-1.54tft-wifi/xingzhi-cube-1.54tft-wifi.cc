@@ -83,6 +83,10 @@ private:
     }
 
     void InitializeButtons() {
+        boot_button_.OnMultipleClick([this]() {
+            ResetWifiConfiguration();
+        }, 5);
+
         boot_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
             auto& app = Application::GetInstance();

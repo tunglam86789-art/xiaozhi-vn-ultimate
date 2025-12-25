@@ -19,6 +19,10 @@
 #include "esp32_music.h"
 #include "esp32_radio.h"
 
+// --- Display Weather ---
+#include "display.h" 
+// ---------------------
+
 #define MAIN_EVENT_SCHEDULE (1 << 0)
 #define MAIN_EVENT_SEND_AUDIO (1 << 1)
 #define MAIN_EVENT_WAKE_WORD_DETECTED (1 << 2)
@@ -100,6 +104,14 @@ private:
     void CheckAssetsVersion();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
+
+    // --- Weather Info ---
+    WeatherInfo weather_info_;
+    uint32_t last_weather_update_ = 0;
+    
+    void UpdateIdleDisplay();
+    void FetchWeatherData();
+    // -------------------
 };
 
 

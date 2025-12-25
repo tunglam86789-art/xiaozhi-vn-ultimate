@@ -130,6 +130,9 @@ const ThemeColors LIGHT_THEME = {
 LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
 LV_FONT_DECLARE(BUILTIN_ICON_FONT);
 LV_FONT_DECLARE(font_awesome_30_4);
+LV_FONT_DECLARE(lv_font_montserrat_20);
+LV_FONT_DECLARE(lv_font_montserrat_28);
+LV_FONT_DECLARE(lv_font_montserrat_48);
 
 void LcdDisplay::InitializeLcdThemes() {
     auto text_font = std::make_shared<LvglBuiltInFont>(&BUILTIN_TEXT_FONT);
@@ -170,6 +173,139 @@ void LcdDisplay::InitializeLcdThemes() {
     theme_manager.RegisterTheme("light", light_theme);
     theme_manager.RegisterTheme("dark", dark_theme);
 }
+
+
+// --- [DienBien Mod]- KHỞI TẠO MÀN HÌNH THỜI TIẾT----
+void LcdDisplay::SetupIdleUI() {
+    auto screen = lv_screen_active();
+    
+    // 1. Tạo Panel chính
+    if (!idle_panel_) {
+        idle_panel_ = lv_obj_create(screen);
+        lv_obj_set_size(idle_panel_, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_style_bg_color(idle_panel_, lv_color_black(), 0);
+        lv_obj_set_flex_flow(idle_panel_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(idle_panel_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_border_width(idle_panel_, 0, 0);
+        lv_obj_add_flag(idle_panel_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_scrollbar_mode(idle_panel_, LV_SCROLLBAR_MODE_OFF);
+    }
+
+    // 2. Đồng hồ (Time)
+    if (!idle_time_label_) {
+        idle_time_label_ = lv_label_create(idle_panel_);
+        lv_obj_set_style_text_font(idle_time_label_, &lv_font_montserrat_48, 0);
+        lv_obj_set_style_text_color(idle_time_label_, lv_color_hex(0xFFFF00), 0);
+    }
+
+    // 3. Ngày tháng (Date)
+    if (!idle_date_label_) {
+        idle_date_label_ = lv_label_create(idle_panel_);
+        lv_obj_set_style_text_font(idle_date_label_, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(idle_date_label_, lv_color_hex(0xAAAAAA), 0);
+    }
+
+    // 4. Biểu tượng & Nhiệt độ (Icon + Temp)
+    if (!idle_icon_label_) {
+        lv_obj_t* row = lv_obj_create(idle_panel_);
+        lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_gap(row, 15, 0);
+
+        idle_icon_label_ = lv_label_create(row);
+        lv_obj_set_style_text_font(idle_icon_label_, &font_awesome_30_4, 0);
+        lv_obj_set_style_text_color(idle_icon_label_, lv_color_hex(0xFFD700), 0);
+
+        idle_temp_label_ = lv_label_create(row);
+        lv_obj_set_style_text_font(idle_temp_label_, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_color(idle_temp_label_, lv_color_white(), 0);
+    }
+
+    // 5. Thông tin chi tiết chạy chữ (Detail)
+    if (!idle_detail_label_) {
+        idle_detail_label_ = lv_label_create(idle_panel_);
+        lv_obj_set_style_text_font(idle_detail_label_, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(idle_detail_label_, lv_color_hex(0x00FFC2), 0); 
+        lv_label_set_long_mode(idle_detail_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+        lv_obj_set_width(idle_detail_label_, LV_PCT(95));
+        lv_obj_set_style_text_align(idle_detail_label_, LV_TEXT_ALIGN_CENTER, 0);
+        
+        // Chạy chữ chậm (20 giây/vòng)
+        lv_obj_set_style_anim_duration(idle_detail_label_, 30000, 0); 
+
+        lv_obj_set_style_margin_top(idle_detail_label_, 10, 0);
+    }
+    // Đẩy dòng chữ chạy lên trên City
+    lv_obj_move_to_index(idle_detail_label_, -1);
+
+    // 6. Thành Phố (City)
+    if (!idle_city_label_) {
+        idle_city_label_ = lv_label_create(idle_panel_);
+        // Font size 28
+        lv_obj_set_style_text_font(idle_city_label_, &lv_font_montserrat_22, 0);
+        
+        // [SỬA LỖI MÀU VÀNG Ở ĐÂY] Dùng mã Hex thay vì lv_color_yellow()
+        lv_obj_set_style_text_color(idle_city_label_, lv_color_white(), 0); 
+        
+        lv_obj_set_style_margin_top(idle_city_label_, 15, 0);
+    }
+    
+    // Đẩy xuống cuối cùng
+    lv_obj_move_to_index(idle_city_label_, -1); 
+}
+
+void LcdDisplay::ShowIdleCard(const IdleCardInfo& info) {
+    DisplayLockGuard lock(this);
+    if (!idle_panel_) return;
+
+    // Hiện panel idle
+    lv_obj_remove_flag(idle_panel_, LV_OBJ_FLAG_HIDDEN);
+    
+    // Ẩn các thành phần chat chính để không bị đè
+    if (container_) lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
+
+    // Cập nhật dữ liệu
+    if (!info.time_text.empty()) lv_label_set_text(idle_time_label_, info.time_text.c_str());
+    if (!info.date_text.empty()) lv_label_set_text(idle_date_label_, (info.day_text + ", " + info.date_text).c_str());
+    if (!info.temperature_text.empty()) lv_label_set_text(idle_temp_label_, info.temperature_text.c_str());
+    if (info.icon) lv_label_set_text(idle_icon_label_, info.icon);
+    if (!info.city.empty()) lv_label_set_text(idle_city_label_, info.city.c_str());
+
+    // --- [CẬP NHẬT PHẦN CHI TIẾT - THÔNG TIN CHẠY NGANG] ---
+    if (idle_detail_label_) {
+        std::string detail;
+        if (!info.description_text.empty()) {
+            // Ghép thành một chuỗi dài
+            detail = info.description_text;
+            
+            if (!info.humidity_text.empty()) detail += "  | Hum: " + info.humidity_text;
+            if (!info.feels_like_text.empty()) detail += "  |  " + info.feels_like_text;
+            if (!info.wind_text.empty()) detail += "  |  " + info.wind_text;
+            if (!info.pressure_text.empty()) detail += "  |  " + info.pressure_text;
+        } else {
+            detail = "Updating weather...";
+        }
+
+        // QUAN TRỌNG: Kiểm tra xem text có thay đổi không trước khi set lại
+        const char* current_text = lv_label_get_text(idle_detail_label_);
+        if (current_text == nullptr || strcmp(current_text, detail.c_str()) != 0) {
+            lv_label_set_text(idle_detail_label_, detail.c_str());
+            
+            // Đặt lại chế độ cuộn sau khi set text để LVGL tính toán lại độ dài
+            lv_label_set_long_mode(idle_detail_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+        }
+    }
+    // ---------------------------------
+}
+
+void LcdDisplay::HideIdleCard() {
+    DisplayLockGuard lock(this);
+    if (idle_panel_) lv_obj_add_flag(idle_panel_, LV_OBJ_FLAG_HIDDEN);
+    if (container_) lv_obj_remove_flag(container_, LV_OBJ_FLAG_HIDDEN);
+}
+// --- [DienBien Mod]- END KHỞI TẠO MÀN HÌNH THỜI TIẾT----
 
 LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width, int height)
     : panel_io_(panel_io), panel_(panel) {
@@ -638,6 +774,8 @@ void LcdDisplay::SetupUI() {
     if (rotation_degree != 0) {
         SetRotation(rotation_degree, false);
     }
+
+    SetupIdleUI();
 }
 #if CONFIG_IDF_TARGET_ESP32P4
 #define  MAX_MESSAGES 40
@@ -1047,6 +1185,8 @@ void LcdDisplay::SetupUI() {
     if (rotation_degree != 0) {
         SetRotation(rotation_degree, false);
     }
+
+    SetupIdleUI();
 }
 
 void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {

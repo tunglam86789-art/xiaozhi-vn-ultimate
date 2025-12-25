@@ -47,6 +47,18 @@ protected:
     std::string ip_address_;
 	std::string music_info_;
 
+    // Idle screen UI elements
+    lv_obj_t* idle_panel_ = nullptr;
+    lv_obj_t* idle_time_label_ = nullptr;
+    lv_obj_t* idle_date_label_ = nullptr;
+    lv_obj_t* idle_temp_label_ = nullptr;
+    lv_obj_t* idle_icon_label_ = nullptr;
+    lv_obj_t* idle_city_label_ = nullptr;
+    lv_obj_t* idle_detail_label_ = nullptr;
+    
+    void SetupIdleUI();
+    // -------------------------------------------
+  
     void InitializeLcdThemes();
     void SetupUI();
     virtual bool Lock(int timeout_ms = 0) override;
@@ -131,6 +143,9 @@ public:
 
     // Rotate lcd display
     virtual bool SetRotation(int rotation_degree, bool save_setting) override;
+    
+    virtual void ShowIdleCard(const IdleCardInfo& info) override;
+    virtual void HideIdleCard() override;
 };
 
 // SPI LCD Display

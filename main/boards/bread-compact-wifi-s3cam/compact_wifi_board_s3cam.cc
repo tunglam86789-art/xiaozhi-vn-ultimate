@@ -172,6 +172,10 @@ private:
     }
 
     void InitializeButtons() {
+        boot_button_.OnMultipleClick([this]() {
+            ResetWifiConfiguration();
+        }, 5);
+
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
