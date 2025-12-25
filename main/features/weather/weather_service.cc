@@ -136,9 +136,9 @@ bool WeatherService::FetchWeatherData() {
     }
 
     // Get configuration
-    Settings weather_settings("weather", false);
-    std::string city = city_.empty() ? weather_settings.GetString("city", "") : city_;
-    std::string api_key = api_key_.empty() ? weather_settings.GetString("api_key", "") : api_key_;
+    Settings weather_settings("wifi", false);
+    std::string city = city_.empty() ? weather_settings.GetString("weather_city", "") : city_;
+    std::string api_key = api_key_.empty() ? weather_settings.GetString("weather_api_key", "") : api_key_;
 
     if (api_key.empty()) {
         api_key = OPEN_WEATHERMAP_API_KEY_DEFAULT;
