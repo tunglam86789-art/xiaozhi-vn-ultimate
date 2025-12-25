@@ -20,7 +20,9 @@
 #include "esp32_radio.h"
 
 // --- Display Weather ---
-#include "display.h" 
+#include "display.h"
+#include "features/weather/weather_service.h"
+#include "features/weather/weather_model.h"
 // ---------------------
 
 #define MAIN_EVENT_SCHEDULE (1 << 0)
@@ -106,11 +108,7 @@ private:
     void SetListeningMode(ListeningMode mode);
 
     // --- Weather Info ---
-    WeatherInfo weather_info_;
-    uint32_t last_weather_update_ = 0;
-    
     void UpdateIdleDisplay();
-    void FetchWeatherData();
     // -------------------
 };
 

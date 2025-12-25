@@ -15,33 +15,9 @@
 #include <string>
 #include <chrono>
 
-// ---[DienBien Mod]--[STRUCTS M?I CHO MÀN HÌNH CH? TH?I TI?T] ---
-struct IdleCardInfo {
-    std::string city;
-    std::string time_text;
-    std::string date_text;
-    std::string day_text;
-    std::string temperature_text;
-    std::string humidity_text;
-    std::string description_text;
-    std::string feels_like_text;
-    std::string wind_text;
-    std::string pressure_text;
-    const char* icon = nullptr;
-};
-
-struct WeatherInfo {
-    std::string city;
-    std::string description;
-    std::string icon_code;
-    float temp = 0.0f;
-    int humidity = 0;
-    float feels_like = 0.0f;
-    int pressure = 0;
-    float wind_speed = 0.0f;
-    bool valid = false;
-};
-// --------------------------------------
+// Forward declarations for weather structures
+struct IdleCardInfo;
+struct WeatherInfo;
 
 class Theme {
 public:
@@ -94,7 +70,7 @@ public:
     // For rotation display
     virtual bool SetRotation(int rotation_degree, bool save_setting) { return false; }
     
-    // --- [HÀM M?I CHO IDLE SCREEN] ---
+    // --- [Hï¿½M M?I CHO IDLE SCREEN] ---
     virtual void ShowIdleCard(const IdleCardInfo& info) {}
     virtual void HideIdleCard() {}
 

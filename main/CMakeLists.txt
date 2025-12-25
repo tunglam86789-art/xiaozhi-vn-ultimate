@@ -15,6 +15,8 @@ set(SOURCES "audio/audio_codec.cc"
             "led/single_led.cc"
             "led/circular_strip.cc"
             "led/gpio_led.cc"
+            "features/weather/weather_service.cc"
+            "features/weather/weather_ui.cc"
             "display/display.cc"
             "display/lcd_touch.cc"
             "display/lcd_display.cc"
@@ -42,7 +44,7 @@ set(SOURCES "audio/audio_codec.cc"
             "main.cc"
             )
 
-set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "protocols" "music")
+set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "protocols" "music" "features/weather")
 
 # Add board common files
 file(GLOB BOARD_COMMON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/common/*.cc)

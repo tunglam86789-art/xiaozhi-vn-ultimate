@@ -3,6 +3,7 @@
 
 #include "lvgl_display.h"
 #include "gif/lvgl_gif.h"
+#include "features/weather/weather_ui.h"
 
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
@@ -47,18 +48,9 @@ protected:
     std::string ip_address_;
 	std::string music_info_;
 
-    // Idle screen UI elements
-    lv_obj_t* idle_panel_ = nullptr;
-    lv_obj_t* idle_time_label_ = nullptr;
-    lv_obj_t* idle_date_label_ = nullptr;
-    lv_obj_t* idle_temp_label_ = nullptr;
-    lv_obj_t* idle_icon_label_ = nullptr;
-    lv_obj_t* idle_city_label_ = nullptr;
-    lv_obj_t* idle_detail_label_ = nullptr;
+    // Weather UI component
+    std::unique_ptr<WeatherUI> weather_ui_;
     
-    void SetupIdleUI();
-    // -------------------------------------------
-  
     void InitializeLcdThemes();
     void SetupUI();
     virtual bool Lock(int timeout_ms = 0) override;

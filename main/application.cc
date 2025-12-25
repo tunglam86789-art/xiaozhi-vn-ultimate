@@ -14,65 +14,14 @@
 #include "sd_card.h"
 #include "esp32_sd_music.h"
 #include <qrcode.h>
-
+#include <cmath>
 #include <cstring>
 #include <esp_log.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
 #include <font_awesome.h>
-
-// --- Weather Info ---
-#include <iomanip>
-#include <sstream>
-#include <esp_http_client.h>
-#include <time.h>
-#include <cmath>
-#include "esp_crt_bundle.h"
-#ifndef FONT_AWESOME_BOLT
-#define FONT_AWESOME_BOLT "\uf0e7"
-#endif
-// ---------------------------
-// Hàm mã hóa URL (Ví dụ: "Ha Noi" -> "Ha%20Noi")
-std::string UrlEncode(const std::string &value) {
-    std::ostringstream escaped;
-    escaped.fill('0');
-    escaped << std::hex;
-
-    for (std::string::const_iterator i = value.begin(), n = value.end(); i != n; ++i) {
-        std::string::value_type c = (*i);
-
-        // Giữ nguyên các ký tự an toàn
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-            escaped << c;
-            continue;
-        }
-
-        // Mã hóa các ký tự đặc biệt
-        escaped << std::uppercase;
-        escaped << '%' << std::setw(2) << int((unsigned char) c);
-        escaped << std::nouppercase;
-    }
-
-    return escaped.str();
-}
-
-// Hàm viết hoa chữ cái đầu (description)
-std::string CapitalizeWords(std::string str) {
-    bool newWord = true;
-    for (size_t i = 0; i < str.length(); ++i) {
-        if (newWord && isalpha(str[i])) {
-            str[i] = toupper(str[i]);
-            newWord = false;
-        } else if (isspace(str[i])) {
-            newWord = true;
-        }
-    }
-    return str;
-}
-//---------------------------------------------------------
-
-
+#include "features/weather/weather_ui.h"
 #define TAG "Application"
 
 
@@ -734,17 +683,22 @@ void Application::MainEventLoop() {
                 // Cập nhật đồng hồ mỗi giây
                 UpdateIdleDisplay();
 
+#if CONFIG_ENABLE_WEATHER_FEATURE
                 // Logic lấy thời tiết: Gọi tại giây thứ 5 sau khi boot HOẶC mỗi 30 phút (1800 giây)
                 if (clock_ticks_ == 5 || clock_ticks_ % 1800 == 0) {
                     ESP_LOGI(TAG, "Khoi tao Task lay thoi tiet...");
                     
                     // Sử dụng xTaskCreate thay vì std::thread để cấp phát Stack lớn hơn (8192 bytes)
                     xTaskCreate([](void* arg) {
-                        Application* app = static_cast<Application*>(arg);
-                        app->FetchWeatherData(); // Gọi hàm lấy thời tiết
+                        auto& weather_service = WeatherService::GetInstance();
+                        if (weather_service.FetchWeatherData()) {
+                            Application* app = static_cast<Application*>(arg);
+                            app->UpdateIdleDisplay();
+                        }
                         vTaskDelete(NULL);       // Tự hủy Task sau khi xong để giải phóng Ram
                     }, "weather_task", 8192, this, 5, NULL);
                 }
+#endif
             }
         }
     }
@@ -1145,25 +1099,18 @@ void Application::PlaySound(const std::string_view& sound) {
     audio_service_.PlaySound(sound);
 }
 
-// --- [HELPER FUNCTION] ---
-const char* GetWeatherIcon(const std::string& code) {
-    if (code.size() < 2) return FONT_AWESOME_CLOUD;
-    std::string prefix = code.substr(0, 2);
-    if (prefix == "01") return FONT_AWESOME_SUN;
-    if (prefix == "09" || prefix == "10") return FONT_AWESOME_CLOUD_RAIN;
-    if (prefix == "11") return FONT_AWESOME_BOLT;
-    return FONT_AWESOME_CLOUD;
-}
-
 
 // --- [DienBien Mod]- CẬP NHẬT MÀN HÌNH THỜI TIẾT----
 void Application::UpdateIdleDisplay() {
+#if CONFIG_ENABLE_WEATHER_FEATURE
+    auto& weather_service = WeatherService::GetInstance();
+    const WeatherInfo& weather_info = weather_service.GetWeatherInfo();
+    
     IdleCardInfo card;
     
-    // 1. Lấy giờ hệ thống
+    // Get system time
     time_t now = time(nullptr);
     struct tm tm_buf;
-    // Sửa lỗi unused variable: Phải dùng if (...) để biến tm_buf được sử dụng
     if (localtime_r(&now, &tm_buf) != nullptr) {
         char buffer[32];
         strftime(buffer, sizeof(buffer), "%H:%M", &tm_buf);
@@ -1176,29 +1123,28 @@ void Application::UpdateIdleDisplay() {
         card.day_text = buffer;
     }
 
-    // 2. Dữ liệu thời tiết
-    if (weather_info_.valid) {
-        card.city = weather_info_.city;
+    // Weather data
+    if (weather_info.valid) {
+        card.city = weather_info.city;
         
         char temp_buf[16];
-        snprintf(temp_buf, sizeof(temp_buf), "%d°C", (int)round(weather_info_.temp));
+        snprintf(temp_buf, sizeof(temp_buf), "%d°C", (int)round(weather_info.temp));
         card.temperature_text = temp_buf;
 
-        card.description_text = weather_info_.description;
-        card.humidity_text = std::to_string(weather_info_.humidity) + "%";
+        card.description_text = weather_info.description;
+        card.humidity_text = std::to_string(weather_info.humidity) + "%";
 
-        // Cập nhật các chỉ số phụ
         char extra_buf[32];
-        snprintf(extra_buf, sizeof(extra_buf), "Feels: %d°C", (int)round(weather_info_.feels_like));
+        snprintf(extra_buf, sizeof(extra_buf), "Feels: %d°C", (int)round(weather_info.feels_like));
         card.feels_like_text = extra_buf;
         
-        snprintf(extra_buf, sizeof(extra_buf), "Wind: %.1f m/s", weather_info_.wind_speed);
+        snprintf(extra_buf, sizeof(extra_buf), "Wind: %.1f m/s", weather_info.wind_speed);
         card.wind_text = extra_buf;
         
-        snprintf(extra_buf, sizeof(extra_buf), "Press: %d hPa", weather_info_.pressure);
+        snprintf(extra_buf, sizeof(extra_buf), "Press: %d hPa", weather_info.pressure);
         card.pressure_text = extra_buf;
 
-        card.icon = GetWeatherIcon(weather_info_.icon_code);
+        card.icon = WeatherUI::GetWeatherIcon(weather_info.icon_code);
     } else {
         card.city = "Connecting...";
         card.temperature_text = "--";
@@ -1207,204 +1153,6 @@ void Application::UpdateIdleDisplay() {
 
     auto display = Board::GetInstance().GetDisplay();
     display->ShowIdleCard(card);
+#endif
 }
 // --- [DienBien Mod]- END CẬP NHẬT MÀN HÌNH THỜI TIẾT----
-
-// --- [DienBien Mod] Hàm lấy thành phố từ IP (Dùng ipwho.is) ---
-std::string GetCityFromIP() {
-    std::string detected_city = "";
-    
-    // 1. Kiểm tra kết nối Wifi
-    if (!WifiStation::GetInstance().IsConnected()) {
-        ESP_LOGE(TAG, "GetCityFromIP: No WiFi connection");
-        return "";
-    }
-
-    esp_http_client_config_t config = {};
-    config.url = "https://ipwho.is/";      // API mới chính xác hơn
-    config.method = HTTP_METHOD_GET;
-    config.timeout_ms = 15000;             // Timeout 15s
-    config.buffer_size = 1024;
-    config.buffer_size_tx = 1024;
-    config.crt_bundle_attach = esp_crt_bundle_attach; // Quan trọng: Hỗ trợ HTTPS
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        ESP_LOGE(TAG, "Failed to init HTTP client for IP detection");
-        return "";
-    }
-
-    // 2. Mở kết nối
-    esp_err_t err = esp_http_client_open(client, 0);
-    if (err == ESP_OK) {
-        // [FIX] Sử dụng biến content_length để tránh warning
-        int content_length = esp_http_client_fetch_headers(client);
-        int status_code = esp_http_client_get_status_code(client);
-        
-        ESP_LOGI(TAG, "IP-Who-Is Status: %d, Content-Length: %d", status_code, content_length);
-
-        if (status_code == 200) {
-            std::string body;
-            char buffer[512];
-            int read_len = 0;
-            while ((read_len = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
-                body.append(buffer, read_len);
-            }
-            
-            ESP_LOGI(TAG, "IP-Who-Is Response: %s", body.c_str());
-
-            if (!body.empty()) {
-                cJSON* root = cJSON_Parse(body.c_str());
-                if (root) {
-                    // ipwho.is trả về "success": true (boolean)
-                    cJSON* success = cJSON_GetObjectItem(root, "success");
-                    
-                    if (cJSON_IsBool(success) && cJSON_IsTrue(success)) {
-                        cJSON* city_json = cJSON_GetObjectItem(root, "city");
-                        if (cJSON_IsString(city_json)) {
-                            detected_city = city_json->valuestring;
-                            ESP_LOGI(TAG, "Auto-detected City success: %s", detected_city.c_str());
-                        }
-                    } else {
-                        ESP_LOGW(TAG, "IP-Who-Is returned success=false");
-                    }
-                    cJSON_Delete(root);
-                } else {
-                    ESP_LOGE(TAG, "Failed to parse JSON");
-                }
-            }
-        } else {
-            ESP_LOGW(TAG, "HTTP Error: %d", status_code);
-        }
-    } else {
-        ESP_LOGE(TAG, "Failed to connect: %s", esp_err_to_name(err));
-    }
-    
-    esp_http_client_cleanup(client);
-    return detected_city;
-}
-
-// --- [DienBien Mod] Hàm lấy thời tiết ---
-#define OPEN_WEATHERMAP_API_KEY_DEFAULT "ae8d3c2fda691593ce3e84472ef25784" // API key mặc định (dùng fot testing, it may be invalid in future)
-void Application::FetchWeatherData() {
-    // 1. Chờ Wifi kết nối
-    int wait_retries = 0;
-    while (!WifiStation::GetInstance().IsConnected() && wait_retries < 20) {
-        ESP_LOGI(TAG, "Waiting for WiFi before fetching weather...");
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        wait_retries++;
-    }
-
-    if (!WifiStation::GetInstance().IsConnected()) {
-        ESP_LOGE(TAG, "WiFi not connected, skipping weather update.");
-        return;
-    }
-
-    // 2. Lấy cấu hình
-    Settings weather_settings("weather", false);
-    std::string city = weather_settings.GetString("city", ""); 
-    std::string api_key = weather_settings.GetString("api_key", "");
-
-    if (api_key.empty()) {
-        api_key = OPEN_WEATHERMAP_API_KEY_DEFAULT; // Dùng API key mặc định
-    }
-    
-    // 3. Logic tự động lấy vị trí
-    if (city.empty() || city == "auto") {
-        ESP_LOGI(TAG, "City not set or 'auto', detecting via IP (ipwho.is)...");
-        
-        for(int i=0; i<2; i++) {
-            std::string auto_city = GetCityFromIP();
-            if (!auto_city.empty()) {
-                city = auto_city;
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
-
-        if (city.empty() || city == "auto") {
-            ESP_LOGW(TAG, "Failed to detect IP location, fallback to Hanoi");
-            city = "Hanoi"; 
-        }
-    }
-
-    // 4. Gọi API OpenWeatherMap
-    std::string url = "https://api.openweathermap.org/data/2.5/weather?q=" + UrlEncode(city) +
-                      "&appid=" + api_key + "&units=metric&lang=en";
-
-    ESP_LOGI(TAG, "Fetching weather from: %s", url.c_str());
-
-    esp_http_client_config_t config = {};
-    config.url = url.c_str();
-    config.method = HTTP_METHOD_GET;
-    config.timeout_ms = 15000;
-    config.crt_bundle_attach = esp_crt_bundle_attach;
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        ESP_LOGE(TAG, "Failed to init HTTP client");
-        return;
-    }
-
-    esp_err_t err = esp_http_client_open(client, 0);
-    if (err == ESP_OK) {
-        esp_http_client_fetch_headers(client); 
-        int status_code = esp_http_client_get_status_code(client);
-        
-        if (status_code == 200) {
-            std::string body;
-            char buffer[512];
-            int read_len = 0;
-            while ((read_len = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
-                body.append(buffer, read_len);
-            }
-            
-            cJSON* root = cJSON_Parse(body.c_str());
-            if (root) {
-                bool success = false;
-                do {
-                    cJSON* name = cJSON_GetObjectItem(root, "name");
-                    cJSON* main_obj = cJSON_GetObjectItem(root, "main");
-                    cJSON* weather_arr = cJSON_GetObjectItem(root, "weather");
-
-                    if (!cJSON_IsString(name) || !cJSON_IsObject(main_obj) || 
-                        !cJSON_IsArray(weather_arr) || cJSON_GetArraySize(weather_arr) == 0) {
-                        break;
-                    }
-
-                    cJSON* temp = cJSON_GetObjectItem(main_obj, "temp");
-                    cJSON* humidity = cJSON_GetObjectItem(main_obj, "humidity");
-                    cJSON* feels_like = cJSON_GetObjectItem(main_obj, "feels_like");
-                    cJSON* pressure = cJSON_GetObjectItem(main_obj, "pressure");
-                    cJSON* wind_obj = cJSON_GetObjectItem(root, "wind");
-                    cJSON* wind_speed = cJSON_IsObject(wind_obj) ? cJSON_GetObjectItem(wind_obj, "speed") : nullptr;
-                    cJSON* w0 = cJSON_GetArrayItem(weather_arr, 0);
-                    cJSON* icon = cJSON_GetObjectItem(w0, "icon");
-                    cJSON* desc = cJSON_GetObjectItem(w0, "description");
-
-                    weather_info_.city = name->valuestring;
-                    if (cJSON_IsNumber(temp)) weather_info_.temp = (float)temp->valuedouble;
-                    if (cJSON_IsNumber(humidity)) weather_info_.humidity = humidity->valueint;
-                    if (cJSON_IsNumber(feels_like)) weather_info_.feels_like = (float)feels_like->valuedouble;
-                    if (cJSON_IsNumber(pressure)) weather_info_.pressure = pressure->valueint;
-                    if (cJSON_IsNumber(wind_speed)) weather_info_.wind_speed = (float)wind_speed->valuedouble;
-                    if (cJSON_IsString(icon)) weather_info_.icon_code = icon->valuestring;
-                    if (cJSON_IsString(desc)) weather_info_.description = CapitalizeWords(desc->valuestring);
-                    
-                    weather_info_.valid = true;
-                    success = true;
-                    ESP_LOGI(TAG, "Weather Updated: %s, %.1f C", weather_info_.city.c_str(), weather_info_.temp);
-
-                } while (0);
-                cJSON_Delete(root);
-                if (success) UpdateIdleDisplay();
-            }
-        } else {
-            ESP_LOGE(TAG, "OpenWeatherMap HTTP Error: %d", status_code);
-        }
-    } else {
-        ESP_LOGE(TAG, "Connection failed: %s", esp_err_to_name(err));
-    }
-    esp_http_client_cleanup(client);
-}
-//----------[DienBien Mod] End--------------
