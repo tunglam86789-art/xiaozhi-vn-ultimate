@@ -122,7 +122,10 @@ choice BOARD_TYPE
         depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_XIAOZHI_AI_IOT_VIETNAM_LCD_SDCARD
         bool "Xiaozhi AI IoT Vietnam LCD + SDCard"
-        depends on IDF_TARGET_ESP32S3   
+        depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_XINGZHI_CUBE_1_54TFT_WIFI
+        bool "XINGZHI_CUBE 1.54(WIFI)"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_BREAD_COMPACT_WIFI
         bool "Bread Compact WiFi (面包板)"
         depends on IDF_TARGET_ESP32S3
@@ -369,9 +372,6 @@ choice BOARD_TYPE
     config BOARD_TYPE_XINGZHI_CUBE_0_96OLED_ML307
         bool "XINGZHI_CUBE 0.96(ML307)"
         depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_XINGZHI_CUBE_1_54TFT_WIFI
-        bool "XINGZHI_CUBE 1.54(WIFI)"
-        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_XINGZHI_CUBE_1_83TFT_WIFI
         bool "XINGZHI_CUBE 1.83(WIFI)"
         depends on IDF_TARGET_ESP32S3
@@ -552,6 +552,12 @@ config SD_CARD_ENABLE
     default n
     help
         Enable SD Card support
+
+config WEATHER_IDLE_DISPLAY_ENABLE
+    bool "Enable Weather Feature (Idle Display for LCD)"
+    default n
+    help
+        Enable Weather Feature support
 
 choice SD_CARD_INTERFACE_TYPE
     prompt "SD Card Interface Type"

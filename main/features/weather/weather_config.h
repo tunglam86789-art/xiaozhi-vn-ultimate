@@ -1,11 +1,6 @@
 #ifndef WEATHER_CONFIG_H
 #define WEATHER_CONFIG_H
 
-// Enable/Disable weather feature
-#ifndef CONFIG_ENABLE_WEATHER_FEATURE
-#define CONFIG_ENABLE_WEATHER_FEATURE 1
-#endif
-
 // Weather update interval (in milliseconds)
 #ifndef WEATHER_UPDATE_INTERVAL_MS
 #define WEATHER_UPDATE_INTERVAL_MS (30 * 60 * 1000)  // 30 minutes

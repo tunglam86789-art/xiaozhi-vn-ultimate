@@ -117,7 +117,7 @@ std::string WeatherService::GetCityFromIP() {
 }
 
 bool WeatherService::FetchWeatherData() {
-#if !CONFIG_ENABLE_WEATHER_FEATURE
+#if !CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     ESP_LOGW(TAG, "Weather feature is disabled");
     return false;
 #endif

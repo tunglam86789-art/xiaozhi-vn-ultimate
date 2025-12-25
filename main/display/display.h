@@ -70,9 +70,11 @@ public:
     // For rotation display
     virtual bool SetRotation(int rotation_degree, bool save_setting) { return false; }
     
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     // For weather idle card
     virtual void ShowIdleCard(const IdleCardInfo& info) {}
     virtual void HideIdleCard() {}
+#endif
 
     inline int width() const { return width_; }
     inline int height() const { return height_; }

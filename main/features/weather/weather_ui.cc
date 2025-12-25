@@ -43,7 +43,7 @@ const char* WeatherUI::GetWeatherIcon(const std::string& code) {
 }
 
 void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_height) {
-#if !CONFIG_ENABLE_WEATHER_FEATURE
+#ifndef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     return;
 #endif
 
@@ -127,7 +127,7 @@ void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_heigh
 }
 
 void WeatherUI::ShowIdleCard(const IdleCardInfo& info) {
-#if !CONFIG_ENABLE_WEATHER_FEATURE
+#ifndef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     return;
 #endif
 
@@ -200,7 +200,7 @@ void WeatherUI::HideIdleCard() {
 }
 
 void WeatherUI::UpdateIdleDisplay(const WeatherInfo& weather_info) {
-#if !CONFIG_ENABLE_WEATHER_FEATURE
+#ifndef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     return;
 #endif
 

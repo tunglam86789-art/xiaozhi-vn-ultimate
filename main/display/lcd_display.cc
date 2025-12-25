@@ -176,25 +176,25 @@ void LcdDisplay::InitializeLcdThemes() {
 }
 
 
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
 void LcdDisplay::ShowIdleCard(const IdleCardInfo& info) {
-#if CONFIG_ENABLE_WEATHER_FEATURE
     if (weather_ui_) {
         DisplayLockGuard lock(this);
         if (container_) lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
         weather_ui_->ShowIdleCard(info);
     }
-#endif
 }
+#endif
 
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
 void LcdDisplay::HideIdleCard() {
-#if CONFIG_ENABLE_WEATHER_FEATURE
     if (weather_ui_) {
         DisplayLockGuard lock(this);
         weather_ui_->HideIdleCard();
         if (container_) lv_obj_remove_flag(container_, LV_OBJ_FLAG_HIDDEN);
     }
-#endif
 }
+#endif
 // --- [DienBien Mod]- END KHỞI TẠO MÀN HÌNH THỜI TIẾT----
 
 LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width, int height)
@@ -214,7 +214,7 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     std::string theme_name = settings.GetString("theme", "light");
     current_theme_ = LvglThemeManager::GetInstance().GetTheme(theme_name);
 
-#if CONFIG_ENABLE_WEATHER_FEATURE
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     weather_ui_ = std::make_unique<WeatherUI>();
 #endif
 
@@ -669,7 +669,7 @@ void LcdDisplay::SetupUI() {
         SetRotation(rotation_degree, false);
     }
 
-#if CONFIG_ENABLE_WEATHER_FEATURE
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     if (weather_ui_) {
         weather_ui_->SetupIdleUI(screen, width_, height_);
     }
@@ -1084,9 +1084,8 @@ void LcdDisplay::SetupUI() {
         SetRotation(rotation_degree, false);
     }
 
-#if CONFIG_ENABLE_WEATHER_FEATURE
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     if (weather_ui_) {
-        auto screen = lv_screen_active();
         weather_ui_->SetupIdleUI(screen, width_, height_);
     }
 #endif
@@ -2024,8 +2023,6 @@ void LcdDisplay::create_canvas(int32_t status_bar_height) {
     canvas_ = lv_canvas_create(lv_scr_act());
     lv_canvas_set_buffer(canvas_, canvas_buffer_, canvas_width_, canvas_height_, LV_COLOR_FORMAT_RGB565);
     ESP_LOGI(TAG,"width: %d, height: %d", width_, height_);
-
-    
 
     lv_obj_set_pos(canvas_, 0, status_bar_height);
     lv_obj_set_size(canvas_, canvas_width_, canvas_height_);

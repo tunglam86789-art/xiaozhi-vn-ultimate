@@ -128,7 +128,7 @@ void Application::CheckAssetsVersion() {
 void Application::CheckNewVersion(Ota& ota) {
     const int MAX_RETRY = 10;
     int retry_count = 0;
-    int retry_delay = 10; // 初始重试延迟为10秒
+    int retry_delay = 10; // Initial retry delay is 10 seconds
 
     auto& board = Board::GetInstance();
     while (true) {
@@ -155,14 +155,14 @@ void Application::CheckNewVersion(Ota& ota) {
                     break;
                 }
             }
-            retry_delay *= 2; // 每次重试后延迟时间翻倍
+            retry_delay *= 2; // The delay time doubles after each retry.
             continue;
         }
         
         ota.CheckVersion(std::string() = "");
 
         retry_count = 0;
-        retry_delay = 10; // 重置重试延迟时间
+        retry_delay = 10; // Reset retry delay time
 
         if (ota.HasNewVersion()) {
             if (UpgradeFirmware(ota)) {
@@ -679,25 +679,32 @@ void Application::MainEventLoop() {
                 // SystemInfo::PrintTaskList();
                 SystemInfo::PrintHeapStats();
             }
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
             if (device_state_ == kDeviceStateIdle) {
-                // Update the clock every second
-                UpdateIdleDisplay();
+                if ((music_ && music_->IsPlaying()) ||
+                    (radio_ && radio_->IsPlaying()) ||
+                    (sd_music_ && sd_music_->IsPlaying()))
+                {
+                    // When music/radio is playing, hide the idle screen
+                } else {
+                    // Update the clock every second
+                    UpdateIdleDisplay();
 
-#if CONFIG_ENABLE_WEATHER_FEATURE
-                // Weather fetch logic: call at the 5th second after boot OR every 30 minutes (1800 seconds)
-                if (clock_ticks_ == 5 || clock_ticks_ % 1800 == 0) {
-                    ESP_LOGI(TAG, "Khoi tao Task lay thoi tiet...");
-                    xTaskCreate([](void* arg) {
-                        auto& weather_service = WeatherService::GetInstance();
-                        if (weather_service.FetchWeatherData()) {
-                            Application* app = static_cast<Application*>(arg);
-                            app->UpdateIdleDisplay();
-                        }
-                        vTaskDelete(NULL);
-                    }, "weather_task", 8192, this, 5, NULL);
+                    // Weather fetch logic: call at the 5th second after boot OR every 30 minutes (1800 seconds)
+                    if (clock_ticks_ == 5 || clock_ticks_ % 1800 == 0) {
+                        ESP_LOGI(TAG, "Khoi tao Task lay thoi tiet...");
+                        xTaskCreate([](void* arg) {
+                            auto& weather_service = WeatherService::GetInstance();
+                            if (weather_service.FetchWeatherData()) {
+                                Application* app = static_cast<Application*>(arg);
+                                app->UpdateIdleDisplay();
+                            }
+                            vTaskDelete(NULL);
+                        }, "weather_task", 8192, this, 5, NULL);
+                    }
                 }
-#endif
             }
+#endif
         }
     }
 }
@@ -769,15 +776,16 @@ void Application::SetDeviceState(DeviceState state) {
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
 
-    // --- [THÊM LOGIC ẨN/HIỆN] ---
-    if (state == kDeviceStateIdle) {
-        // Khi về Idle, cập nhật ngay lập tức
-        UpdateIdleDisplay();
-    } else {
-        // Nếu không phải Idle, ẩn màn hình chờ đi
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
+    // --- [ADD HIDDEN/SHOWABLE LOGIC FOR IDLE SCREEN] ---
+    if (state != kDeviceStateIdle) {
+        // If not Idle, hide the idle screen
+        ESP_LOGI(TAG, "Hiding idle screen due to state change: %s -> %s", 
+                STATE_STRINGS[previous_state], STATE_STRINGS[state]);
         display->HideIdleCard();
     }
     // -----------------------------
+#endif
 
     auto led = board.GetLed();
     led->OnStateChanged();
@@ -1098,8 +1106,8 @@ void Application::PlaySound(const std::string_view& sound) {
 }
 
 // --- [DienBien Mod]- WEATHER SCREEN UPDATE----
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
 void Application::UpdateIdleDisplay() {
-#if CONFIG_ENABLE_WEATHER_FEATURE
     auto& weather_service = WeatherService::GetInstance();
     const WeatherInfo& weather_info = weather_service.GetWeatherInfo();
     
@@ -1150,6 +1158,6 @@ void Application::UpdateIdleDisplay() {
 
     auto display = Board::GetInstance().GetDisplay();
     display->ShowIdleCard(card);
-#endif
 }
+#endif
 // --- [DienBien Mod]- END WEATHER SCREEN UPDATE----

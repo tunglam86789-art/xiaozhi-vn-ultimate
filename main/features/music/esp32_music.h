@@ -108,6 +108,7 @@ public:
     virtual size_t GetBufferSize() const override { return buffer_size_; }
     virtual bool IsDownloading() const override { return is_downloading_; }
     virtual int16_t* GetAudioData() override { return final_pcm_data_fft; }
+    virtual bool IsPlaying() const override { return is_playing_; }
     
     // Display mode control methods
     void SetDisplayMode(DisplayMode mode);

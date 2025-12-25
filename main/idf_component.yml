@@ -20,7 +20,7 @@ dependencies:
   78/esp_lcd_nv3023: ~1.0.0
   TienHuyIoT_esp-wifi-connect:
     git: https://github.com/TienHuyIoT/esp-wifi-connect.git
-    version: "main"
+    version: "v1.0.1"
   78/esp-opus-encoder: ~2.4.1
   78/esp-ml307: ~3.3.7
   78/xiaozhi-fonts: ~1.5.4

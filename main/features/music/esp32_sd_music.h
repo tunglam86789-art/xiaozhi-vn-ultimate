@@ -139,6 +139,7 @@ public:
 
     bool next();       // Bài kế tiếp (hỗ trợ shuffle/repeat)
     bool prev();       // Bài trước đó
+    bool IsPlaying() const; // Đang phát hay không
 
     // ============================================================
     // 8) Playback Settings

@@ -983,6 +983,13 @@ void Esp32SdMusic::repeat(RepeatMode mode)
     ESP_LOGI(TAG, "Repeat mode = %s", mode_str);
 }
 
+bool Esp32SdMusic::IsPlaying() const
+{
+    PlayerState st = state_.load();
+    return (st != PlayerState::Stopped &&
+            st != PlayerState::Error);
+}
+
 bool Esp32SdMusic::play()
 {
     {

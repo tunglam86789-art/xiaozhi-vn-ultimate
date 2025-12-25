@@ -136,8 +136,10 @@ public:
     // Rotate lcd display
     virtual bool SetRotation(int rotation_degree, bool save_setting) override;
     
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     virtual void ShowIdleCard(const IdleCardInfo& info) override;
     virtual void HideIdleCard() override;
+#endif
 };
 
 // SPI LCD Display
