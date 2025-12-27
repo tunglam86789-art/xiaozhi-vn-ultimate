@@ -59,6 +59,7 @@ void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_heigh
     if (!idle_panel_) {
         idle_panel_ = lv_obj_create(parent);
         lv_obj_set_size(idle_panel_, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_style_radius(idle_panel_, 0, 0);
         lv_obj_set_style_bg_color(idle_panel_, lv_color_black(), 0);
         lv_obj_set_flex_flow(idle_panel_, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(idle_panel_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -102,7 +103,7 @@ void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_heigh
     // Detail label (scrolling text)
     if (!idle_detail_label_) {
         idle_detail_label_ = lv_label_create(idle_panel_);
-        lv_obj_set_style_text_font(idle_detail_label_, &lv_font_montserrat_20, 0);
+        // lv_obj_set_style_text_font(idle_detail_label_, &lv_font_montserrat_20, 0);
         lv_obj_set_style_text_color(idle_detail_label_, lv_color_hex(0x00FFC2), 0);
         lv_label_set_long_mode(idle_detail_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
         lv_obj_set_width(idle_detail_label_, LV_PCT(95));
@@ -116,7 +117,7 @@ void WeatherUI::SetupIdleUI(lv_obj_t* parent, int screen_width, int screen_heigh
     // City label
     if (!idle_city_label_) {
         idle_city_label_ = lv_label_create(idle_panel_);
-        lv_obj_set_style_text_font(idle_city_label_, &lv_font_montserrat_22, 0);
+        // lv_obj_set_style_text_font(idle_city_label_, &lv_font_montserrat_22, 0);
         lv_obj_set_style_text_color(idle_city_label_, lv_color_white(), 0);
         lv_obj_set_style_margin_top(idle_city_label_, 15, 0);
     }
@@ -169,7 +170,7 @@ void WeatherUI::ShowIdleCard(const IdleCardInfo& info) {
         }
         if (!info.humidity_text.empty()) {
             if (!detail.empty()) detail += "  |  ";
-            detail += "Humidity: " + info.humidity_text;
+            detail += "Độ ẩm: " + info.humidity_text;
         }
         if (!info.feels_like_text.empty()) {
             if (!detail.empty()) detail += "  |  ";
@@ -233,13 +234,13 @@ void WeatherUI::UpdateIdleDisplay(const WeatherInfo& weather_info) {
         card.humidity_text = std::to_string(weather_info.humidity) + "%";
 
         char extra_buf[32];
-        snprintf(extra_buf, sizeof(extra_buf), "Feels: %d°C", (int)round(weather_info.feels_like));
+        snprintf(extra_buf, sizeof(extra_buf), "Cảm giác như: %d°C", (int)round(weather_info.feels_like));
         card.feels_like_text = extra_buf;
         
-        snprintf(extra_buf, sizeof(extra_buf), "Wind: %.1f m/s", weather_info.wind_speed);
+        snprintf(extra_buf, sizeof(extra_buf), "Gió: %.1f m/s", weather_info.wind_speed);
         card.wind_text = extra_buf;
         
-        snprintf(extra_buf, sizeof(extra_buf), "Press: %d hPa", weather_info.pressure);
+        snprintf(extra_buf, sizeof(extra_buf), "Áp suất: %d hPa", weather_info.pressure);
         card.pressure_text = extra_buf;
 
         card.icon = GetWeatherIcon(weather_info.icon_code);

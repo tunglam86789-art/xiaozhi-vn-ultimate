@@ -95,10 +95,10 @@ std::string WeatherService::GetCityFromIP() {
                 cJSON* success = cJSON_GetObjectItem(root, "success");
                 
                 if (cJSON_IsBool(success) && cJSON_IsTrue(success)) {
-                    cJSON* city_json = cJSON_GetObjectItem(root, "city");
+                    cJSON* city_json = cJSON_GetObjectItem(root, "region");
                     if (cJSON_IsString(city_json)) {
                         detected_city = city_json->valuestring;
-                        ESP_LOGI(TAG, "Auto-detected City success: %s", detected_city.c_str());
+                        ESP_LOGI(TAG, "Auto-detected Region success: %s", detected_city.c_str());
                     }
                 } else {
                     ESP_LOGW(TAG, "IP-Who-Is returned success=false");
@@ -165,7 +165,7 @@ bool WeatherService::FetchWeatherData() {
 
     // Call OpenWeatherMap API
     std::string url = std::string(WEATHER_API_ENDPOINT) + "?q=" + UrlEncode(city) +
-                      "&appid=" + api_key + "&units=metric&lang=en";
+                      "&appid=" + api_key + "&units=metric&lang=vi";
 
     ESP_LOGI(TAG, "Fetching weather from: %s", url.c_str());
 
