@@ -39,8 +39,12 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
  private:
   Button boot_button_;
   LcdDisplay *display_;
-  LcdTouch *touch_;
   i2c_master_bus_handle_t codec_i2c_bus_;
+#ifdef CONFIG_TOUCH_PANEL_ENABLE
+  LcdTouch *touch_;
+  // Touch interrupt semaphore
+  SemaphoreHandle_t touch_isr_mux_ = nullptr;
+#endif
 
   void InitializeSpi() {
     spi_bus_config_t buscfg = {};
@@ -125,11 +129,36 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
   }
 
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
+  static void IRAM_ATTR touch_isr_callback(void* arg) {
+    XiaozhiAIIoTEs3n28p *board = static_cast<XiaozhiAIIoTEs3n28p *>(arg);
+    board->NotifyTouchEvent();
+  }
+
+  bool WaitForTouchEvent(TickType_t timeout = portMAX_DELAY) {
+    if (touch_isr_mux_ != NULL) {
+        BaseType_t result = xSemaphoreTake(touch_isr_mux_, timeout);
+        return result == pdTRUE;
+    }
+    return false;
+  }
+
+  void NotifyTouchEvent() {
+    if (touch_isr_mux_ != NULL) {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xSemaphoreGiveFromISR(touch_isr_mux_, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+  }
   void InitializeTouch() {
     ESP_LOGI(TAG, "Initialize touch controller FT6236G");
     ESP_LOGI(TAG, "Touch I2C: SDA=%d, SCL=%d, ADDR=0x%02X", TOUCH_I2C_SDA_PIN, TOUCH_I2C_SCL_PIN, TOUCH_I2C_ADDR);
     ESP_LOGI(TAG, "Touch pins: RST=%d, INT=%d", TOUCH_RST_PIN, TOUCH_INT_PIN);
     
+    // Create touch interrupt semaphore
+    touch_isr_mux_ = xSemaphoreCreateBinary();
+    if (touch_isr_mux_ == NULL) {
+        ESP_LOGE("EchoEar", "Failed to create touch semaphore");
+    }
     
     // Manual reset of touch controller
     if (TOUCH_RST_PIN != GPIO_NUM_NC) {
@@ -150,6 +179,20 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
       vTaskDelay(pdMS_TO_TICKS(200));    // 200ms is a minimum wait for touch controller to boot
         ESP_LOGI(TAG, "Touch controller reset complete");
     }
+
+    if (TOUCH_INT_PIN != GPIO_NUM_NC) {
+      const gpio_config_t int_gpio_config = {
+        .pin_bit_mask = (1ULL << TOUCH_INT_PIN),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_NEGEDGE
+      };
+      gpio_config(&int_gpio_config);
+      gpio_install_isr_service(0);
+      gpio_intr_enable(TOUCH_INT_PIN);
+      gpio_isr_handler_add(TOUCH_INT_PIN, touch_isr_callback, this);
+    }
     
     // Check I2C devices
     CheckI2CDevice(0x18, "ES8311 Audio Codec");
@@ -162,7 +205,7 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
       // TOUCH_RST_PIN already handled above, should not handle reset here by driver 
       // due to timing delay 10ms is very short and causes issues inside driver
       .rst_gpio_num = GPIO_NUM_NC,   // TOUCH_RST_PIN
-      .int_gpio_num = TOUCH_INT_PIN, // Disable interrupt or use polling
+      .int_gpio_num = GPIO_NUM_NC, // TOUCH_INT_PIN
       .levels = {
         .reset = 0,
         .interrupt = 0,
@@ -206,127 +249,132 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     touch_ = new I2cLcdTouch(tp_, tp_io_handle, 
                           DISPLAY_WIDTH, DISPLAY_HEIGHT, 
                           DISPLAY_SWAP_XY, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+    
+    touch_->SetInterruptCallback([this]()->bool {
+        return this->WaitForTouchEvent();
+    });
 
     touch_->SetGestureCallback([this](TouchGesture gesture, int16_t x, int16_t y) {
       ESP_LOGI(TAG, "Touch gesture detected: %d at (%d, %d)", static_cast<int>(gesture), x, y);
       switch (gesture) {
         case TOUCH_GESTURE_SWIPE_RIGHT:
-            {
-              ESP_LOGI(TAG, "👉 Swipe RIGHT");
-              Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
-              ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-              if (source == Display::DisplaySourceType::SD_CARD) {
-                  ESP_LOGI(TAG, "Play Next track");
-                  auto& app = Application::GetInstance();
-                  auto sd_music = app.GetSdMusic();
-                  if (sd_music) {
-                    sd_music->stop();
-                    sd_music->next();
-                  }
-              } else {
-                auto& board = Board::GetInstance();
-                auto backlight = board.GetBacklight();
-                int new_brightness = backlight->brightness();
-                
-                // Swipe right - increase brightness
-                new_brightness += 10;
-                if (new_brightness > 100) new_brightness = 100;
-                ESP_LOGI(TAG, "Brightness: %d → %d", backlight->brightness(), new_brightness);
-                
-                backlight->SetBrightness(new_brightness);
-                auto display = board.GetDisplay();
-                display->ShowNotification("Brightness: " + std::to_string(new_brightness));
+          {
+            ESP_LOGI(TAG, "👉 Swipe RIGHT");
+            Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+            ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
+            if (source == Display::DisplaySourceType::SD_CARD) {
+              ESP_LOGI(TAG, "Play Next track");
+              auto& app = Application::GetInstance();
+              auto sd_music = app.GetSdMusic();
+              if (sd_music) {
+                sd_music->stop();
+                sd_music->next();
+                vTaskDelay(pdMS_TO_TICKS(500));
               }
-            }
-            break;
-        case TOUCH_GESTURE_SWIPE_LEFT:
-            {
-              ESP_LOGI(TAG, "👈 Swipe LEFT");
-              Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
-              ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-              if (source == Display::DisplaySourceType::SD_CARD) {
-                  ESP_LOGI(TAG, "Play Previous track");
-                  auto& app = Application::GetInstance();
-                  auto sd_music = app.GetSdMusic();
-                  if (sd_music) {
-                    sd_music->stop();
-                    sd_music->prev();
-                  }
-                  break;
-              }
+            } else {
               auto& board = Board::GetInstance();
               auto backlight = board.GetBacklight();
               int new_brightness = backlight->brightness();
               
-              // Swipe left - decrease brightness
-              new_brightness -= 10;
-              if (new_brightness <= 0) new_brightness = 0;  // Min 5% to keep visible
+              // Swipe right - increase brightness
+              new_brightness += 5;
+              if (new_brightness > 100) new_brightness = 100;
               ESP_LOGI(TAG, "Brightness: %d → %d", backlight->brightness(), new_brightness);
               
               backlight->SetBrightness(new_brightness);
               auto display = board.GetDisplay();
               display->ShowNotification("Brightness: " + std::to_string(new_brightness));
             }
-            break;
-        case TOUCH_GESTURE_SWIPE_DOWN:
-            ESP_LOGI(TAG, "👇 Swipe DOWN");
-            {
-              auto codec = GetAudioCodec();
-              auto volume = codec->output_volume() - 10;
-              if (volume < 0) {
-                  volume = 0;
-              }
-              codec->SetOutputVolume(volume);
-              GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
-            }
-            break;
-        case TOUCH_GESTURE_SWIPE_UP:
-            ESP_LOGI(TAG, "👆 Swipe UP");
-            {
-              auto codec = GetAudioCodec();
-              auto volume = codec->output_volume() + 10;
-              if (volume > 100) {
-                  volume = 100;
-              }
-              codec->SetOutputVolume(volume);
-              GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
-            }
-            break;
-        case TOUCH_GESTURE_TAP:
-            ESP_LOGI(TAG, "🖐️ Tap at (%d, %d)", x, y);
-            break;
-        case TOUCH_GESTURE_DOUBLE_TAP:
-            ESP_LOGI(TAG, "👆👆 Double Tap at (%d, %d)", x, y);
-            {
+          }
+          break;
+        case TOUCH_GESTURE_SWIPE_LEFT:
+          {
+            ESP_LOGI(TAG, "👈 Swipe LEFT");
+            Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+            ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
+            if (source == Display::DisplaySourceType::SD_CARD) {
+              ESP_LOGI(TAG, "Play Previous track");
               auto& app = Application::GetInstance();
-              if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
-                  ResetWifiConfiguration();
+              auto sd_music = app.GetSdMusic();
+              if (sd_music) {
+                sd_music->stop();
+                sd_music->prev();
+                vTaskDelay(pdMS_TO_TICKS(500));
               }
-              app.ToggleChatState();
+              break;
             }
-            break;
+            auto& board = Board::GetInstance();
+            auto backlight = board.GetBacklight();
+            int new_brightness = backlight->brightness();
+            
+            // Swipe left - decrease brightness
+            new_brightness -= 5;
+            if (new_brightness <= 0) new_brightness = 0;  // Min 5% to keep visible
+            ESP_LOGI(TAG, "Brightness: %d → %d", backlight->brightness(), new_brightness);
+            
+            backlight->SetBrightness(new_brightness);
+            auto display = board.GetDisplay();
+            display->ShowNotification("Brightness: " + std::to_string(new_brightness));
+          }
+          break;
+        case TOUCH_GESTURE_SWIPE_DOWN:
+          ESP_LOGI(TAG, "👇 Swipe DOWN");
+          {
+            auto codec = GetAudioCodec();
+            auto volume = codec->output_volume() - 5;
+            if (volume < 0) {
+              volume = 0;
+            }
+            codec->SetOutputVolume(volume);
+            GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+          }
+          break;
+        case TOUCH_GESTURE_SWIPE_UP:
+          ESP_LOGI(TAG, "👆 Swipe UP");
+          {
+            auto codec = GetAudioCodec();
+            auto volume = codec->output_volume() + 5;
+            if (volume > 100) {
+              volume = 100;
+            }
+            codec->SetOutputVolume(volume);
+            GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+          }
+          break;
+        case TOUCH_GESTURE_TAP:
+          ESP_LOGI(TAG, "🖐️ Tap at (%d, %d)", x, y);
+          break;
+        case TOUCH_GESTURE_DOUBLE_TAP:
+          ESP_LOGI(TAG, "👆👆 Double Tap at (%d, %d)", x, y);
+          {
+            auto& app = Application::GetInstance();
+            if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
+              ResetWifiConfiguration();
+            }
+            app.ToggleChatState();
+          }
+          break;
         case TOUCH_GESTURE_LONG_PRESS:
-            ESP_LOGI(TAG, "Long Press at (%d, %d)", x, y);
-            {
-              Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
-              ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
-              if (source == Display::DisplaySourceType::NONE) {
-                auto& app = Application::GetInstance();
-                auto sd_music = app.GetSdMusic();
-                if (sd_music) {
-                  ESP_LOGI(TAG, "Toggle Play/Pause");
-                  sd_music->play();
-                }
-              } else {
-                GetAudioCodec()->SetOutputVolume(0);
-                GetDisplay()->ShowNotification(Lang::Strings::MUTED);
+          ESP_LOGW(TAG, "Long Press at (%d, %d)", x, y);
+          {
+            Display::DisplaySourceType source = static_cast<LcdDisplay*>(display_)->DetectSourceFromInfo();
+            ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
+            if (source == Display::DisplaySourceType::NONE) {
+              auto& app = Application::GetInstance();
+              auto sd_music = app.GetSdMusic();
+              if (sd_music) {
+                ESP_LOGI(TAG, "Toggle Play/Pause");
+                sd_music->play();
               }
+            } else {
+              GetAudioCodec()->SetOutputVolume(0);
+              GetDisplay()->ShowNotification(Lang::Strings::MUTED);
             }
-            break;
+          }
+          break;
         default:
             break;
-      }
-    });
+      } });
     ESP_LOGI(TAG, "Touch screen is ready - try touching now...");
   }
 #endif
