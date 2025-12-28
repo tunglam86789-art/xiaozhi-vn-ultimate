@@ -7,6 +7,7 @@
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
 #include <esp_lcd_touch.h>
 #include <esp_lcd_touch_ft6x36.h>
+#include "display/lcd_touch.h"
 #endif
 #include <lvgl.h>
 #include <esp_lvgl_port.h>
@@ -16,7 +17,6 @@
 #include "codecs/es8311_audio_codec.h"
 #include "button.h"
 #include "display/lcd_display.h"
-#include "display/lcd_touch.h"
 #include "led/single_led.h"
 #include "assets/lang_config.h"
 #include "system_reset.h"

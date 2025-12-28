@@ -10,7 +10,7 @@ static const char* TAG = "LcdTouch";
 // ============================================================================
 
 LcdTouch::LcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_t panel_io,
-                   uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y)
+                   uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y, TouchInterruptCallback callback)
     : touch_handle_(touch_handle)
     , panel_io_(panel_io)
     , swap_xy_(swap_xy)
@@ -18,28 +18,31 @@ LcdTouch::LcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_
     , mirror_y_(mirror_y)
     , width_(width)
     , height_(height)
+    , interrupt_callback_(callback)
 {
     ESP_LOGI(TAG, "LcdTouch initialized: %dx%d, swap_xy=%d, mirror_x=%d, mirror_y=%d",
              width_, height_, swap_xy_, mirror_x_, mirror_y_);
-    ESP_LOGI(TAG, "I2cLcdTouch initialized");
-    // Use custom touch driver instead of FT5x06
-    ESP_LOGI(TAG, "Adding custom touch driver to LVGL...");
-    lv_indev_t *touch_indev = lv_indev_create();
-    lv_indev_set_type(touch_indev, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_driver_data(touch_indev, touch_handle_);
-    lv_indev_set_user_data(touch_indev, this);
-    lv_indev_set_read_cb(touch_indev, [](lv_indev_t *drv, lv_indev_data_t *data) {
-        LcdTouch* instance = (LcdTouch*)lv_indev_get_user_data(drv);
-        instance->touch_driver_read(drv, data);
-    });
 
 #ifdef LVGL_PORT_TOUCH_DRIVER_CALLBACK
-    // Fallback to LVGL port touch driver registration
     const lvgl_port_touch_cfg_t touch_cfg = {
       .disp = lv_display_get_default(),
       .handle = touch_handle_,
     };
     lvgl_port_add_touch(&touch_cfg);
+#else
+    ESP_LOGI(TAG, "Adding custom touch driver to LVGL...");
+    touch_indev_ = lv_indev_create();
+    lv_indev_set_type(touch_indev_, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_driver_data(touch_indev_, touch_handle_);
+    lv_indev_set_user_data(touch_indev_, this);
+#if (0)
+    lv_indev_set_read_cb(touch_indev_, [](lv_indev_t *drv, lv_indev_data_t *data) {
+        LcdTouch* instance = (LcdTouch*)lv_indev_get_user_data(drv);
+        instance->touch_driver_read(drv, data);
+    });
+#else
+    xTaskCreatePinnedToCore(touch_event_task, "touch_task", 4 * 1024, this, 5, NULL, 1);
+#endif
 #endif
 }
 
@@ -49,20 +52,61 @@ LcdTouch::~LcdTouch() {
     }
 }
 
+void LcdTouch::touch_event_task(void* arg)
+{
+    LcdTouch *touch = static_cast<LcdTouch*>(arg);
+    if (touch == nullptr) {
+        ESP_LOGE(TAG, "Invalid touchpad pointer in touch_event_task");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    lv_indev_data_t data;
+    vTaskDelay(pdMS_TO_TICKS(100)); // Initial delay
+    while (true) {
+        touch->touch_driver_read(touch->touch_indev_, &data);
+    }
+}
+
 void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
     esp_lcd_touch_point_data_t point_data[1];
     uint8_t touch_cnt = 0;
 
-    esp_lcd_touch_handle_t touch_ctx = (esp_lcd_touch_handle_t)lv_indev_get_driver_data(drv);
-    esp_lcd_touch_read_data(touch_ctx);
+    if (interrupt_callback_) {
+        if (!interrupt_callback_()) {
+            data->state = LV_INDEV_STATE_RELEASED;
+            data->continue_reading = true;
+            return;
+        }
+    } else {
+        // No interrupt callback, proceed with polling
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 
-    esp_err_t err = esp_lcd_touch_get_data(touch_ctx, point_data, &touch_cnt, 1);
-    
+    esp_lcd_touch_handle_t touch_ctx = (esp_lcd_touch_handle_t)lv_indev_get_driver_data(drv);
+    esp_err_t err = esp_lcd_touch_read_data(touch_ctx);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read touch data: %s", esp_err_to_name(err));
+        return;
+    }
+
+    err = esp_lcd_touch_get_data(touch_ctx, point_data, &touch_cnt, 1);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get touch data: %s", esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGD(TAG, "Touch points detected: %d, at (%d, %d)", touch_cnt, point_data[0].x, point_data[0].y);
+
     if (err == ESP_OK && touch_cnt > 0) {
         data->state = LV_INDEV_STATE_PRESSED;
         data->point.x = point_data[0].x;
         data->point.y = point_data[0].y;
-        touch_end_time_ = esp_timer_get_time();
+        int64_t current_time = esp_timer_get_time();
+        if (current_time - touch_end_time_ > release_timeout_us_) {
+            release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;
+        }
+        touch_end_time_ = current_time;
         
         int16_t current_x = static_cast<int16_t>(point_data[0].x);
         int16_t current_y = static_cast<int16_t>(point_data[0].y);
@@ -83,6 +127,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
                 release_timeout_us_ = TOUCH_SWIPE_RELEASE_TIMEOUT; // Extend release timeout to avoid immediate release handling
                 HandleTouchPress(current_x, current_y);
                 gesture_detected_ = true;
+                ESP_LOGI(TAG, "Swipe gesture detected during touch");
                 if (gesture_callback_) {
                     gesture_callback_(gesture, touch_current_x_, touch_current_y_);
                 }
@@ -94,6 +139,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
             int64_t touch_duration = esp_timer_get_time() - touch_start_time_;
             if (touch_duration > long_press_time_us_) {
                 gesture_detected_ = true;
+                ESP_LOGI(TAG, "Long press detected at (%d, %d)", touch_current_x_, touch_current_y_);
                 if (gesture_callback_) {
                     gesture_callback_(TOUCH_GESTURE_LONG_PRESS, touch_current_x_, touch_current_y_);
                 }
@@ -101,22 +147,23 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         }
         
         was_touching_ = true;
-        ESP_LOGD(TAG, "Touch detected at (%d, %d)", data->point.x, data->point.y);
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
-        
         // Handle touch release (end of touch)
         if (was_touching_) { // Debounce release
             int64_t current_time = esp_timer_get_time();
+            int32_t time_since_release = current_time - touch_end_time_;
             if (current_time - touch_end_time_ > release_timeout_us_) {
-                if (!gesture_detected_) HandleTouchRelease();
+                if (!gesture_detected_) {
+                    HandleTouchRelease();
+                }
                 was_touching_ = false;
                 release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;
             }
         }
     }
 
-    data->continue_reading = false;
+    data->continue_reading = true;
 }
 
 
@@ -136,7 +183,7 @@ void LcdTouch::HandleTouchPress(int16_t x, int16_t y) {
 void LcdTouch::HandleTouchRelease() {
     int64_t touch_duration = esp_timer_get_time() - touch_start_time_;
     
-    ESP_LOGD(TAG, "Touch release after %lld us", touch_duration);
+    ESP_LOGD(TAG, "Touch release after %lld us, is_swiping_=%d", touch_duration, is_swiping_);
     
     // Only trigger tap if no swipe was detected (same logic as custom_touch_read_cb)
     if (!is_swiping_ && !gesture_detected_) {
@@ -208,6 +255,10 @@ void LcdTouch::SetGestureCallback(TouchEventCallback callback) {
     gesture_callback_ = callback;
 }
 
+void LcdTouch::SetInterruptCallback(TouchInterruptCallback callback) {
+    interrupt_callback_ = callback;
+}
+
 void LcdTouch::SetSwipeThreshold(int16_t threshold) {
     swipe_threshold_ = threshold;
     ESP_LOGI(TAG, "Swipe threshold set to %d pixels", threshold);
@@ -242,8 +293,8 @@ esp_lcd_touch_handle_t LcdTouch::GetTouchHandle() const {
 // ============================================================================
 
 I2cLcdTouch::I2cLcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_t panel_io,
-                         uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y)
-    : LcdTouch(touch_handle, panel_io, width, height, swap_xy, mirror_x, mirror_y)
+                         uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y, TouchInterruptCallback callback)
+    : LcdTouch(touch_handle, panel_io, width, height, swap_xy, mirror_x, mirror_y, callback)
 {
 }
 

@@ -190,8 +190,10 @@ void LcdDisplay::ShowIdleCard(const IdleCardInfo& info) {
 void LcdDisplay::HideIdleCard() {
     if (weather_ui_) {
         DisplayLockGuard lock(this);
-        weather_ui_->HideIdleCard();
-        if (container_) lv_obj_remove_flag(container_, LV_OBJ_FLAG_HIDDEN);
+        if (container_ && lv_obj_has_flag(container_, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_remove_flag(container_, LV_OBJ_FLAG_HIDDEN);
+            weather_ui_->HideIdleCard();
+        }
     }
 }
 #endif

@@ -686,6 +686,7 @@ void Application::MainEventLoop() {
                     (sd_music_ && sd_music_->IsPlaying()))
                 {
                     // When music/radio is playing, hide the idle screen
+                    display->HideIdleCard();
                 } else {
                     // Update the clock every second
                     UpdateIdleDisplay();

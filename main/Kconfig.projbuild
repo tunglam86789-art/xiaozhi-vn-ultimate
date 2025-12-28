@@ -543,7 +543,6 @@ endchoice
 config TOUCH_PANEL_ENABLE
     bool "Enable Touch Panel"
     default n
-    depends on BOARD_TYPE_XIAOZHI_AI_IOT_VIETNAM_ES3N28P_LCD_2_8
     help
         Enable Touch Panel support
 
@@ -552,12 +551,6 @@ config SD_CARD_ENABLE
     default n
     help
         Enable SD Card support
-
-config WEATHER_IDLE_DISPLAY_ENABLE
-    bool "Enable Weather Feature (Idle Display for LCD)"
-    default n
-    help
-        Enable Weather Feature support
 
 choice SD_CARD_INTERFACE_TYPE
     prompt "SD Card Interface Type"
@@ -571,6 +564,11 @@ choice SD_CARD_INTERFACE_TYPE
         bool "SPI Interface"
 endchoice
 
+config WEATHER_IDLE_DISPLAY_ENABLE
+    bool "Enable Weather Feature (Idle Display for LCD)"
+    default n
+    help
+        Enable Weather Feature support
 
 choice DISPLAY_ESP32S3_KORVO2_V3
     depends on BOARD_TYPE_ESP_KORVO2_V3

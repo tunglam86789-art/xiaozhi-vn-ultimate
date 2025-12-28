@@ -7,7 +7,7 @@
 #include <esp_lcd_touch.h>
 #include <functional>
 
-#define TOUCH_RELEASE_TIMEOUT 50000 // 50ms
+#define TOUCH_RELEASE_TIMEOUT 10000 // 10ms
 #define TOUCH_SWIPE_RELEASE_TIMEOUT 500000 // 500ms
 
 // Touch gesture types
@@ -24,23 +24,25 @@ enum TouchGesture {
 
 // Touch event callback type
 using TouchEventCallback = std::function<void(TouchGesture gesture, int16_t x, int16_t y)>;
+using TouchInterruptCallback = std::function<bool()>;
 
 // Base LcdTouch class
 class LcdTouch {
 protected:
     esp_lcd_touch_handle_t touch_handle_ = nullptr;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
+    lv_indev_t *touch_indev_ = nullptr;
     
     // Touch event callback
     TouchEventCallback gesture_callback_ = nullptr;
     
     // Gesture detection parameters
     int16_t swipe_threshold_ = 20;          // Minimum pixels for swipe (reduced for better sensitivity)
-    int64_t swipe_timeout_us_ = 2000000;    // Maximum time for swipe (2 seconds)
-    int64_t tap_timeout_us_ = 200000;       // Maximum time for tap (200ms)
-    int64_t double_tap_window_us_ = 500000; // Window for double tap (500ms)
-    int64_t long_press_time_us_ = 800000;   // Time for long press (800ms)
-    int64_t release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;    // Time to confirm release (50ms)
+    int32_t swipe_timeout_us_ = 2000000;    // Maximum time for swipe (2 seconds)
+    int32_t tap_timeout_us_ = 170000;       // Maximum time for tap (170ms)
+    int32_t double_tap_window_us_ = 500000; // Window for double tap (500ms)
+    int32_t long_press_time_us_ = 800000;   // Time for long press (800ms)
+    int32_t release_timeout_us_ = TOUCH_RELEASE_TIMEOUT;    // Time to confirm release (50ms)
     
     // Touch state tracking
     bool is_touching_ = false;
@@ -61,14 +63,16 @@ protected:
     bool mirror_y_;
     uint16_t width_;
     uint16_t height_;
+    TouchInterruptCallback interrupt_callback_ = nullptr;
 
 public:
     LcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_t panel_io,
-             uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y);
+             uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y, TouchInterruptCallback callback);
     virtual ~LcdTouch();
     
     // Register callback for gesture events
     virtual void SetGestureCallback(TouchEventCallback callback);
+    virtual void SetInterruptCallback(TouchInterruptCallback callback);
     
     // Configure gesture detection parameters
     virtual void SetSwipeThreshold(int16_t threshold);
@@ -82,6 +86,8 @@ public:
 
     // LVGL touch driver callback
     void touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data);
+
+    static void touch_event_task(void* arg);
     
 protected:
     // Internal gesture detection methods
@@ -94,7 +100,7 @@ protected:
 class I2cLcdTouch : public LcdTouch {
 public:
     I2cLcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_t panel_io,
-                uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y);
+                uint16_t width, uint16_t height, bool swap_xy, bool mirror_x, bool mirror_y, TouchInterruptCallback callback = nullptr);
     virtual ~I2cLcdTouch();
 };
 
