@@ -429,7 +429,9 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
 
   virtual Display *GetDisplay() override { return display_; }
 
+#ifdef CONFIG_TOUCH_PANEL_ENABLE
   virtual LcdTouch *GetTouch() override { return touch_; }
+#endif
 
   virtual Backlight *GetBacklight() override {
     static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN,
