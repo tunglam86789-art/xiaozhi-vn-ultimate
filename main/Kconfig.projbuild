@@ -526,6 +526,10 @@ choice DISPLAY_LCD_TYPE
         bool "ILI9341 240*320"
     config LCD_ILI9341_240X320_NO_IPS
         bool "ILI9341 240*320, Non-IPS"
+    config LCD_ILI9341_320X480
+        bool "ILI9341 320*480 4.0 inch"
+    config LCD_ILI9488_320X480
+        bool "ILI9488 320*480 4.0 inch"
     config LCD_GC9A01_240X240
         bool "GC9A01 240*240 Circle"
     config LCD_TYPE_800_1280_10_1_INCH
