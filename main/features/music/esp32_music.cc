@@ -825,8 +825,9 @@ void Esp32Music::PlayAudioStream() {
     int bytes_left = 0;
     uint8_t* read_ptr = nullptr;
     
+    constexpr int INPUT_BUF = 8192;
     // Allocate MP3 input buffer
-    mp3_input_buffer = (uint8_t*)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
+    mp3_input_buffer = (uint8_t*)heap_caps_malloc(INPUT_BUF, MALLOC_CAP_SPIRAM);
     if (!mp3_input_buffer) {
         ESP_LOGE(TAG, "Failed to allocate MP3 input buffer");
         is_playing_ = false;
@@ -898,7 +899,7 @@ void Esp32Music::PlayAudioStream() {
         }
         
         // If more MP3 data is needed, read from the buffer
-        if (bytes_left < 4096) {  // Maintain at least 4KB of data for decoding
+        if (bytes_left < (INPUT_BUF / 2)) {  // Maintain at least 8KB of data for decoding
             AudioChunk chunk;
             
             // Retrieve audio data from the buffer
@@ -935,13 +936,14 @@ void Esp32Music::PlayAudioStream() {
                 }
                 
                 // Check buffer space
-                size_t space_available = 8192 - bytes_left;
+                size_t space_available = INPUT_BUF - bytes_left;
                 size_t copy_size = std::min(chunk.size, space_available);
                 
                 // Copy new data
                 memcpy(mp3_input_buffer + bytes_left, chunk.data, copy_size);
                 bytes_left += copy_size;
                 read_ptr = mp3_input_buffer;
+                memset(mp3_input_buffer + bytes_left, 0, INPUT_BUF - bytes_left);
                 
                 // Check and skip ID3 tags (allow multi-chunk ID3 skipping)
                 if (!id3_processed && bytes_left >= 10)
@@ -959,6 +961,7 @@ void Esp32Music::PlayAudioStream() {
                         if (bytes_left < 256) {
                             ESP_LOGW(TAG, "Remaining buffer too small after ID3 skip, waiting for next chunk");
                             bytes_left = 0;
+                            heap_caps_free(chunk.data);
                             continue;   // pump next incoming data
                         }
                     }
@@ -990,11 +993,13 @@ void Esp32Music::PlayAudioStream() {
 
         // Skip to sync position
         if (sync_offset > 0) {
+            ESP_LOGW(TAG, "MP3 sync word found at offset %d, skipping bytes", sync_offset);
             read_ptr += sync_offset;
             bytes_left -= sync_offset;
         }
         
         // Decode MP3 frame
+        int bytes_left_before = bytes_left;
         int decode_result = MP3Decode(mp3_decoder_, &read_ptr, &bytes_left, pcm_buffer, 0);
         
         if (decode_result == 0) {
@@ -1002,34 +1007,32 @@ void Esp32Music::PlayAudioStream() {
             MP3GetLastFrameInfo(mp3_decoder_, &mp3_frame_info_);
             
             // ---- SONG INFO DISPLAY ----
-            if (!full_info_displayed_) {
+            if (!full_info_displayed_) { 
+                if (display) {
 
-            auto display = Board::GetInstance().GetDisplay();
-            if (display) {
+                    char buf[256];
 
-                char buf[256];
+                    int br = (mp3_frame_info_.bitrate > 0)
+                                ? mp3_frame_info_.bitrate / 1000
+                                : 0;
 
-                int br = (mp3_frame_info_.bitrate > 0)
-                            ? mp3_frame_info_.bitrate / 1000
-                            : 0;
+                    int hz = (mp3_frame_info_.samprate > 0)
+                                ? mp3_frame_info_.samprate
+                                : 44100;
 
-                int hz = (mp3_frame_info_.samprate > 0)
-                            ? mp3_frame_info_.samprate
-                            : 44100;
+                    const char* ch = (mp3_frame_info_.nChans == 2) ? "Stereo" : "Mono";
 
-                const char* ch = (mp3_frame_info_.nChans == 2) ? "Stereo" : "Mono";
+                    snprintf(buf, sizeof(buf),
+                            "ONLINE 《%s》\n%s • %d kbps | %d Hz | %s",
+                            title_name_.empty() ? current_song_name_.c_str() : title_name_.c_str(),
+                            artist_name_.empty() ? "Unknown Artist" : artist_name_.c_str(),
+                            br, hz, ch);
 
-                snprintf(buf, sizeof(buf),
-                         "ONLINE 《%s》\n%s • %d kbps | %d Hz | %s",
-                         title_name_.empty() ? current_song_name_.c_str() : title_name_.c_str(),
-                         artist_name_.empty() ? "Unknown Artist" : artist_name_.c_str(),
-                         br, hz, ch);
+                    display->SetMusicInfo(buf);
+                }
 
-                display->SetMusicInfo(buf);
+                full_info_displayed_ = true;
             }
-
-            full_info_displayed_ = true;
-        }
 
             total_frames_decoded_++;
             
@@ -1125,16 +1128,15 @@ void Esp32Music::PlayAudioStream() {
             
         } else {
             // Decode failed
-            ESP_LOGW(TAG, "MP3 decode failed with error: %d", decode_result);
-            
-            // Skip some bytes and continue
-            if (bytes_left > 1) {
+            ESP_LOGW(TAG, "MP3 decode failed with error: %d, bytes_left_before: %d, bytes_left: %d", decode_result, bytes_left_before, bytes_left);
+            if (bytes_left > 0 && bytes_left < bytes_left_before) {
+                // Skip one byte and try again
                 read_ptr++;
                 bytes_left--;
             } else {
                 bytes_left = 0;
             }
-            vTaskDelay(pdMS_TO_TICKS(2));  
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
     }
