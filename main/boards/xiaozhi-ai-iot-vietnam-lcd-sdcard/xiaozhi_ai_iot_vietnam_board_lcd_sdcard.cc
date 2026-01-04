@@ -97,6 +97,15 @@ private:
         buscfg.quadhd_io_num = GPIO_NUM_NC;
         buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
         ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
+
+        spi_bus_config_t touch_buscfg = {};
+        touch_buscfg.mosi_io_num = TOUCH_MOSI_PIN;
+        touch_buscfg.miso_io_num = TOUCH_MISO_PIN;
+        touch_buscfg.sclk_io_num = TOUCH_CLK_PIN;
+        touch_buscfg.quadwp_io_num = GPIO_NUM_NC;
+        touch_buscfg.quadhd_io_num = GPIO_NUM_NC;
+        touch_buscfg.max_transfer_sz = DISPLAY_WIDTH * 80 * sizeof(uint16_t);
+        ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &touch_buscfg, SPI_DMA_CH_AUTO));
     }
 
     void InitializeLcdDisplay() {
@@ -211,7 +220,7 @@ private:
             .y_max = DISPLAY_HEIGHT - 1,
             // TOUCH_RST_PIN already handled above, should not handle reset here by driver 
             // due to timing delay 10ms is very short and causes issues inside driver
-            .rst_gpio_num = GPIO_NUM_NC, // TOUCH_RST_PIN
+            .rst_gpio_num = GPIO_NUM_NC,   // TOUCH_RST_PIN
             .int_gpio_num = TOUCH_INT_PIN, // TOUCH_INT_PIN
             .levels = {
                 .reset = 0,
@@ -219,7 +228,7 @@ private:
             },
             .flags = {
                 .swap_xy = DISPLAY_SWAP_XY ? 1U : 0U,
-                .mirror_x = DISPLAY_MIRROR_X ? 1U : 0U,
+                .mirror_x = DISPLAY_MIRROR_X ? 0U : 1U,
                 .mirror_y = DISPLAY_MIRROR_Y ? 1U : 0U,
             },
             .interrupt_callback = esp_touch_isr_callback,
@@ -233,21 +242,21 @@ private:
         esp_err_t ret;
         esp_lcd_panel_io_handle_t tp_io_handle = NULL;
         esp_lcd_panel_io_spi_config_t tp_io_config = ESP_LCD_TOUCH_IO_SPI_XPT2046_CONFIG(TOUCH_CS_PIN);
-        ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI3_HOST, &tp_io_config, &tp_io_handle);
+        ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &tp_io_config, &tp_io_handle);
             if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to create touch I2C panel IO: %s", esp_err_to_name(ret));
             return;
         }
         ESP_LOGI(TAG, "Creating touch controller XPT2046");
-        esp_lcd_touch_handle_t tp_ = NULL;
-        ret = esp_lcd_touch_new_spi_xpt2046(tp_io_handle, &tp_cfg, &tp_);
+        esp_lcd_touch_handle_t tp = NULL;
+        ret = esp_lcd_touch_new_spi_xpt2046(tp_io_handle, &tp_cfg, &tp);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to create FT6x36 touch controller: %s", esp_err_to_name(ret));
             return;
         }
         ESP_LOGI(TAG, "✅ Touch panel XPT2046 initialized successfully with custom driver!");
 
-        touch_ = new I2cLcdTouch(tp_, tp_io_handle, 
+        touch_ = new I2cLcdTouch(tp, tp_io_handle, 
                             DISPLAY_WIDTH, DISPLAY_HEIGHT, 
                             DISPLAY_SWAP_XY, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
         

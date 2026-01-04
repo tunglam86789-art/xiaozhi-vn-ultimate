@@ -61,16 +61,16 @@
 
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_10
 #define DISPLAY_MOSI_PIN      GPIO_NUM_12
-#define DISPLAY_MISO_PIN      GPIO_NUM_18
+#define DISPLAY_MISO_PIN      GPIO_NUM_NC
 #define DISPLAY_CLK_PIN       GPIO_NUM_11
 #define DISPLAY_DC_PIN        GPIO_NUM_13
 #define DISPLAY_RST_PIN       GPIO_NUM_14
 #define DISPLAY_CS_PIN        GPIO_NUM_21
 
 // Touchscreen section (XPT2046)
-#define TOUCH_MOSI_PIN        DISPLAY_MOSI_PIN
-#define TOUCH_MISO_PIN        DISPLAY_MISO_PIN
-#define TOUCH_CLK_PIN         DISPLAY_CLK_PIN
+#define TOUCH_MOSI_PIN        GPIO_NUM_46 // DISPLAY_MOSI_PIN
+#define TOUCH_MISO_PIN        GPIO_NUM_18
+#define TOUCH_CLK_PIN         GPIO_NUM_9 // DISPLAY_CLK_PIN
 #define TOUCH_CS_PIN          GPIO_NUM_3
 #define TOUCH_INT_PIN         GPIO_NUM_17
 
@@ -346,6 +346,6 @@
 
 
 // A MCP Test: Control a lamp
-#define LAMP_GPIO GPIO_NUM_18
+#define LAMP_GPIO GPIO_NUM_8
 
 #endif // _BOARD_CONFIG_H_
