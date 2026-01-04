@@ -22,6 +22,9 @@ dependencies:
   TienHuyIoT_esp-wifi-connect:
     git: https://github.com/TienHuyIoT/esp-wifi-connect.git
     version: "v1.0.1"
+  TienHuyIoT_esp_lcd_touch_xpt2046:
+    git: https://github.com/TienHuyIoT/esp_lcd_touch_xpt2046.git
+    version: "v1.0.7"
   78/esp-opus-encoder: ~2.4.1
   78/esp-ml307: ~3.3.7
   78/xiaozhi-fonts: ~1.5.4
@@ -39,7 +42,6 @@ dependencies:
     version: ^1.0.1
     rules:
     - if: target not in [esp32]
-  atanisoft/esp_lcd_touch_xpt2046: ^1.0.6
   cfscn/esp_lcd_touch_ft6x36: ^1.0.8
   espressif/esp_lcd_touch_ft5x06: ~1.0.7
   espressif/esp_lcd_touch_gt911: ^1
