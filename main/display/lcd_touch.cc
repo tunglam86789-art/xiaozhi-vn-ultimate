@@ -99,7 +99,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         return;
     }
 
-    ESP_LOGI(TAG, "Touch points detected: %d, at (%d, %d)", touch_cnt, point_data[0].x, point_data[0].y);
+    ESP_LOGD(TAG, "Touch points detected: %d, at (%d, %d)", touch_cnt, point_data[0].x, point_data[0].y);
 
     if (err == ESP_OK && touch_cnt > 0 && touch_cnt <= TOUCH_MAX_POINT) {
         data->state = LV_INDEV_STATE_PRESSED;
@@ -154,7 +154,6 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         was_touching_ = true;
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
-        // ESP_LOGI(TAG, "No touch detected");
         // Handle touch release (end of touch)
         if (was_touching_) { // Debounce release
             int64_t current_time = esp_timer_get_time();

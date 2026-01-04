@@ -44,7 +44,7 @@ protected:
     TouchEventCallback gesture_callback_ = nullptr;
     
     // Gesture detection parameters
-    int16_t swipe_threshold_ = 40;          // Minimum pixels for swipe (reduced for better sensitivity)
+    int16_t swipe_threshold_ = 50;          // Minimum pixels for swipe (reduced for better sensitivity)
     int32_t swipe_timeout_us_ = 2000000;    // Maximum time for swipe (2 seconds)
     int32_t tap_timeout_us_ = 170000;       // Maximum time for tap (170ms)
     int32_t double_tap_window_us_ = 500000; // Window for double tap (500ms)

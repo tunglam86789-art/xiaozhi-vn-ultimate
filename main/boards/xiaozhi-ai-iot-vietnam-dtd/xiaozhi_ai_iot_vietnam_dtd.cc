@@ -73,9 +73,9 @@ static const gc9a01_lcd_init_cmd_t gc9107_lcd_init_cmds[] = {
 };
 #endif
  
-#define TAG "XiaozhiAiIotVietnamBoardLcdSdcard"
+#define TAG "XiaozhiAIIoTVietNamDTD"
 
-class XiaozhiAiIotVietnamBoardLcdSdcard : public WifiBoard {
+class XiaozhiAIIoTVietNamDTD : public WifiBoard {
 private:
  
     Button boot_button_;
@@ -96,8 +96,9 @@ private:
         buscfg.quadwp_io_num = GPIO_NUM_NC;
         buscfg.quadhd_io_num = GPIO_NUM_NC;
         buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
-        ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
+        ESP_ERROR_CHECK(spi_bus_initialize(DISPLAY_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
+#ifndef CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
         spi_bus_config_t touch_buscfg = {};
         touch_buscfg.mosi_io_num = TOUCH_MOSI_PIN;
         touch_buscfg.miso_io_num = TOUCH_MISO_PIN;
@@ -105,7 +106,8 @@ private:
         touch_buscfg.quadwp_io_num = GPIO_NUM_NC;
         touch_buscfg.quadhd_io_num = GPIO_NUM_NC;
         touch_buscfg.max_transfer_sz = DISPLAY_WIDTH * 80 * sizeof(uint16_t);
-        ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &touch_buscfg, SPI_DMA_CH_AUTO));
+        ESP_ERROR_CHECK(spi_bus_initialize(TOUCH_SPI_HOST, &touch_buscfg, SPI_DMA_CH_AUTO));
+#endif
     }
 
     void InitializeLcdDisplay() {
@@ -121,7 +123,7 @@ private:
         io_config.trans_queue_depth = 10;
         io_config.lcd_cmd_bits = 8;
         io_config.lcd_param_bits = 8;
-        ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
+        ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(DISPLAY_SPI_HOST, &io_config, &panel_io));
 
         // Initialize LCD driver chip
         ESP_LOGD(TAG, "Install LCD driver");
@@ -163,7 +165,7 @@ private:
         if (tp->config.user_data == NULL) {
             return;
         }
-        XiaozhiAiIotVietnamBoardLcdSdcard *board = static_cast<XiaozhiAiIotVietnamBoardLcdSdcard *>(tp->config.user_data);
+        XiaozhiAIIoTVietNamDTD *board = static_cast<XiaozhiAIIoTVietNamDTD *>(tp->config.user_data);
         board->NotifyTouchEvent();
     }
 
@@ -228,8 +230,8 @@ private:
             },
             .flags = {
                 .swap_xy = DISPLAY_SWAP_XY ? 1U : 0U,
-                .mirror_x = DISPLAY_MIRROR_X ? 0U : 1U,
-                .mirror_y = DISPLAY_MIRROR_Y ? 1U : 0U,
+                .mirror_x = DISPLAY_MIRROR_X ? 1U : 0U,
+                .mirror_y = DISPLAY_MIRROR_Y ? 0U : 1U,
             },
             .interrupt_callback = esp_touch_isr_callback,
             .user_data = this
@@ -242,7 +244,7 @@ private:
         esp_err_t ret;
         esp_lcd_panel_io_handle_t tp_io_handle = NULL;
         esp_lcd_panel_io_spi_config_t tp_io_config = ESP_LCD_TOUCH_IO_SPI_XPT2046_CONFIG(TOUCH_CS_PIN);
-        ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &tp_io_config, &tp_io_handle);
+        ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)TOUCH_SPI_HOST, &tp_io_config, &tp_io_handle);
             if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to create touch I2C panel IO: %s", esp_err_to_name(ret));
             return;
@@ -433,7 +435,7 @@ private:
     }
 
 public:
-    XiaozhiAiIotVietnamBoardLcdSdcard() :
+    XiaozhiAIIoTVietNamDTD() :
         boot_button_(BOOT_BUTTON_GPIO),
         volume_up_button_(VOLUME_UP_BUTTON_GPIO),
         volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
@@ -509,4 +511,4 @@ public:
 #endif
 };
 
-DECLARE_BOARD(XiaozhiAiIotVietnamBoardLcdSdcard);
+DECLARE_BOARD(XiaozhiAIIoTVietNamDTD);
