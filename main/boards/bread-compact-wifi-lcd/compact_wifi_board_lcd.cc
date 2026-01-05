@@ -159,7 +159,7 @@ private:
     }
 
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
-    static void esp_touch_isr_callback(esp_lcd_touch_handle_t tp) {
+    static void IRAM_ATTR esp_touch_isr_callback(esp_lcd_touch_handle_t tp) {
         if (tp->config.user_data == NULL) {
             return;
         }
@@ -171,6 +171,7 @@ private:
         if (touch_isr_mux_ != NULL) {
             BaseType_t result = xSemaphoreTake(touch_isr_mux_, timeout);
             // ESP_LOGW(TAG, "Touch event received");
+            vTaskDelay(pdMS_TO_TICKS(10)); // Debounce delay minimum 10ms
             return result == pdTRUE;
         }
         return false;
@@ -180,7 +181,9 @@ private:
         if (touch_isr_mux_ != NULL) {
             BaseType_t xHigherPriorityTaskWoken = pdFALSE;
             xSemaphoreGiveFromISR(touch_isr_mux_, &xHigherPriorityTaskWoken);
-            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+            if( xHigherPriorityTaskWoken != pdFALSE ) {
+                portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+            }
         }
     }
     void InitializeTouch() {
@@ -256,9 +259,12 @@ private:
         }
         ESP_LOGI(TAG, "✅ Touch panel XPT2046 initialized successfully with custom driver!");
 
-        touch_ = new I2cLcdTouch(tp, tp_io_handle, 
+        touch_ = new SpiLcdTouch(tp, tp_io_handle, 
                             DISPLAY_WIDTH, DISPLAY_HEIGHT, 
                             DISPLAY_SWAP_XY, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+        
+        touch_->SetRatioXY(2.0f);
+        touch_->SetSwipeThreshold(60); // pixels
         
         touch_->SetInterruptCallback([this]()->bool {
             return this->WaitForTouchEvent();

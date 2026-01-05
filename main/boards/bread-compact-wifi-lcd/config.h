@@ -70,7 +70,7 @@
 
 // Touchscreen section (XPT2046)
 // Use same SPI bus as LCD for touch controller, comment out to use different SPI bus
-#define CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
+// #define CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
 
 #ifdef CONFIG_XPT2046_ENABLE_SAME_BUS_AS_LCD
 #define TOUCH_SPI_HOST        DISPLAY_SPI_HOST
