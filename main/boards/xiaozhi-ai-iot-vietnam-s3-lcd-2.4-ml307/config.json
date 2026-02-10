@@ -2,7 +2,7 @@
     "target": "esp32s3",
     "builds": [
         {
-            "name": "zhengchen-cam",
+            "name": "xiaozhi-ai-iot-vietnam-s3-lcd-2.4-ml307",
             "sdkconfig_append": [
                 "CONFIG_USE_DEVICE_AEC=y",
 				"CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=48",

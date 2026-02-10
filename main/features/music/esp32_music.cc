@@ -1039,8 +1039,8 @@ void Esp32Music::PlayAudioStream() {
         
         // Basic frame info validity check
         if (mp3_frame_info_.sample_rate == 0 || mp3_frame_info_.channel == 0) {
-            ESP_LOGW(TAG, "Invalid frame info: rate=%u, channels=%u, skipping", 
-                    mp3_frame_info_.sample_rate, mp3_frame_info_.channel);
+            // ESP_LOGW(TAG, "Invalid frame info: rate=%u, channels=%u, skipping", 
+            //         mp3_frame_info_.sample_rate, mp3_frame_info_.channel);
             continue;
         }
         

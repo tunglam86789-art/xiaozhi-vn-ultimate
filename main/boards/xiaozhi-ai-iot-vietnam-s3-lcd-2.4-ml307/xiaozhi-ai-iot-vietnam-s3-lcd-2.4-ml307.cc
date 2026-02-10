@@ -19,12 +19,13 @@
 #include <esp_lvgl_port.h>
 #include <lvgl.h>
 #include "settings.h"
+#include "esp_lcd_ili9341.h"
 
 #define FIRST_BOOT_NS "boot_config"  
 #define FIRST_BOOT_KEY "is_first"    
 
 
-#define TAG "ZhengchenCamBoard"
+#define TAG "AIoTS3Lcd24ML307"
 
 //控制器初始化函数声明
 void InitializeMCPController();
@@ -32,62 +33,13 @@ void InitializeMCPController();
 LV_FONT_DECLARE(font_puhui_20_4);
 LV_FONT_DECLARE(font_awesome_20_4);
 
-class Pca9557 : public I2cDevice {
-public:
-    Pca9557(i2c_master_bus_handle_t i2c_bus, uint8_t addr) : I2cDevice(i2c_bus, addr) {
-        WriteReg(0x01, 0x03);
-        WriteReg(0x03, 0xf8);
-    }
-
-    void SetOutputState(uint8_t bit, uint8_t level) {
-        uint8_t data = ReadReg(0x01);
-        data = (data & ~(1 << bit)) | (level << bit);
-        WriteReg(0x01, data);
-    }
-};
-
-class CustomAudioCodec : public BoxAudioCodec {
-private:
-    Pca9557* pca9557_;
-
-public:
-    CustomAudioCodec(i2c_master_bus_handle_t i2c_bus, Pca9557* pca9557) 
-        : BoxAudioCodec(i2c_bus, 
-                       AUDIO_INPUT_SAMPLE_RATE, 
-                       AUDIO_OUTPUT_SAMPLE_RATE,
-                       AUDIO_I2S_GPIO_MCLK, 
-                       AUDIO_I2S_GPIO_BCLK, 
-                       AUDIO_I2S_GPIO_WS, 
-                       AUDIO_I2S_GPIO_DOUT, 
-                       AUDIO_I2S_GPIO_DIN,
-                       GPIO_NUM_NC, 
-                       AUDIO_CODEC_ES8311_ADDR, 
-                       AUDIO_CODEC_ES7210_ADDR, 
-                       AUDIO_INPUT_REFERENCE),
-          pca9557_(pca9557) {
-    }
-
-    virtual void EnableOutput(bool enable) override {
-        BoxAudioCodec::EnableOutput(enable);
-        // if (enable) {
-        //     pca9557_->SetOutputState(1, 1);
-        // } else {
-        //     pca9557_->SetOutputState(1, 0);
-        // }
-    }
-};
-
-class ZhengchenCamBoard : public WifiBoard {
+class AIoTS3Lcd24ML307 : public WifiBoard {
 private:
     i2c_master_bus_handle_t i2c_bus_;
-    i2c_master_dev_handle_t pca9557_handle_;
     Button boot_button_;
     Button volume_up_button_;
     Button volume_down_button_;
     LcdDisplay* display_ = nullptr;
-    Pca9557* pca9557_;
-    Esp32Camera* camera_ = nullptr;
-    PowerManager* power_manager_ = new PowerManager(GPIO_NUM_47);
 
     void InitializeI2c() {
         // Initialize I2C peripheral
@@ -104,9 +56,6 @@ private:
             },
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
-
-        // Initialize PCA9557
-        // pca9557_ = new Pca9557(i2c_bus_, 0x19);
     }
 
     void InitializeSpi() {
@@ -130,23 +79,11 @@ private:
         });
 
         boot_button_.OnDoubleClick([this]() {
-            Settings settings(FIRST_BOOT_NS, true);
-            bool is_first_boot = settings.GetInt(FIRST_BOOT_KEY, 1) != 0;
-            if (is_first_boot) {
-                ESP_LOGI(TAG, "On first launch, double-tap to take a picture function is enabled.");
-                auto camera = GetCamera();
-                if (!camera->Capture()) {
-                    ESP_LOGE(TAG, "Camera capture failed");
-                }
-                settings.SetInt(FIRST_BOOT_KEY, 0);
-            } else {
-                ESP_LOGI(TAG, "Not the first launch, double-tap to take a picture function is disabled.");
-                auto& app = Application::GetInstance();
-                if (app.GetDeviceState() == kDeviceStateIdle) {
-                    app.SetAecMode(app.GetAecMode() == kAecOff ? kAecOnDeviceSide : kAecOff);
-                    ESP_LOGI(TAG, "Toggled AEC mode via double-tap button %s", app.GetAecMode() == kAecOff ? "OFF" : "ON");
-                    GetAudioCodec()->SetOutputVolume(60);
-                }
+            auto& app = Application::GetInstance();
+            if (app.GetDeviceState() == kDeviceStateIdle) {
+                app.SetAecMode(app.GetAecMode() == kAecOff ? kAecOnDeviceSide : kAecOff);
+                ESP_LOGI(TAG, "Toggled AEC mode via double-tap button %s", app.GetAecMode() == kAecOff ? "OFF" : "ON");
+                GetAudioCodec()->SetOutputVolume(60);
             }
         });
 
@@ -188,7 +125,7 @@ private:
         });
     }
 
-    void InitializeSt7789Display() {
+    void InitializeLcdDisplay() {
         esp_lcd_panel_io_handle_t panel_io = nullptr;
         esp_lcd_panel_handle_t panel = nullptr;
         // 液晶屏控制IO初始化
@@ -197,7 +134,7 @@ private:
         io_config.cs_gpio_num = DISPLAY_CS;
         io_config.dc_gpio_num = DISPLAY_DC;
         io_config.spi_mode = 0;
-        io_config.pclk_hz = 80 * 1000 * 1000;
+        io_config.pclk_hz = 40 * 1000 * 1000;
         io_config.trans_queue_depth = 10;
         io_config.lcd_cmd_bits = 8;
         io_config.lcd_param_bits = 8;
@@ -209,10 +146,10 @@ private:
         panel_config.reset_gpio_num = DISPLAY_RES;
         panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
         panel_config.bits_per_pixel = 16;
-        ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel));
+        // ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel));
+        ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(panel_io, &panel_config, &panel));
         
         esp_lcd_panel_reset(panel);
-        // pca9557_->SetOutputState(0, 0);
 
         esp_lcd_panel_init(panel);
         esp_lcd_panel_invert_color(panel, true);
@@ -237,76 +174,34 @@ private:
         
     }
 
-    void InitializeCamera() {
-        static esp_cam_ctlr_dvp_pin_config_t dvp_pin_config = {
-            .data_width = CAM_CTLR_DATA_WIDTH_8,
-            .data_io = {
-                [0] = CAMERA_PIN_D0,
-                [1] = CAMERA_PIN_D1,
-                [2] = CAMERA_PIN_D2,
-                [3] = CAMERA_PIN_D3,
-                [4] = CAMERA_PIN_D4,
-                [5] = CAMERA_PIN_D5,
-                [6] = CAMERA_PIN_D6,
-                [7] = CAMERA_PIN_D7,
-            },
-            .vsync_io = CAMERA_PIN_VSYNC,
-            .de_io = CAMERA_PIN_HREF,
-            .pclk_io = CAMERA_PIN_PCLK,
-            .xclk_io = CAMERA_PIN_XCLK,
-        };
-
-        esp_video_init_sccb_config_t sccb_config = {
-#if (CAMERA_I2C_NUM != AUDIO_CODEC_I2C_NUM)
-            .init_sccb = true,
-            .i2c_config = {
-                .port = CAMERA_I2C_NUM,
-                .scl_pin = CAMERA_PIN_SIOC,
-                .sda_pin = CAMERA_PIN_SIOD,
-            },
-#else
-            .init_sccb = false, // Use existing I2C bus with audio codec
-            .i2c_handle = i2c_bus_,
-#endif
-            .freq = 100000,
-        };
-
-        esp_video_init_dvp_config_t dvp_config = {
-            .sccb_config = sccb_config,
-            .reset_pin = CAMERA_PIN_RESET,
-            .pwdn_pin = CAMERA_PIN_PWDN,
-            .dvp_pin = dvp_pin_config,
-            .xclk_freq = XCLK_FREQ_HZ,
-        };
-
-        esp_video_init_config_t video_config = {
-            .dvp = &dvp_config,
-        };
-
-        camera_ = new Esp32Camera(video_config);
-        camera_->SetHMirror(false);
-    }
-
 	void InitializeController() { InitializeMCPController(); }
 
 public:
-    ZhengchenCamBoard() : 
+    AIoTS3Lcd24ML307() : 
     boot_button_(BOOT_BUTTON_GPIO),
     volume_up_button_(VOLUME_UP_BUTTON_GPIO),
     volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
         InitializeI2c();
         InitializeSpi();
-        InitializeSt7789Display();
+        InitializeLcdDisplay();
         InitializeButtons();
-        // InitializeCamera();
 		InitializeController();
         GetBacklight()->RestoreBrightness();
     }
 
     virtual AudioCodec* GetAudioCodec() override {
-        static CustomAudioCodec audio_codec(
-            i2c_bus_, 
-            pca9557_);
+        static BoxAudioCodec audio_codec(i2c_bus_, 
+                       AUDIO_INPUT_SAMPLE_RATE, 
+                       AUDIO_OUTPUT_SAMPLE_RATE,
+                       AUDIO_I2S_GPIO_MCLK, 
+                       AUDIO_I2S_GPIO_BCLK, 
+                       AUDIO_I2S_GPIO_WS, 
+                       AUDIO_I2S_GPIO_DOUT, 
+                       AUDIO_I2S_GPIO_DIN,
+                       GPIO_NUM_NC, 
+                       AUDIO_CODEC_ES8311_ADDR, 
+                       AUDIO_CODEC_ES7210_ADDR, 
+                       AUDIO_INPUT_REFERENCE);
         return &audio_codec;
     }
 
@@ -318,31 +213,11 @@ public:
         static SingleLed led(BUILTIN_LED_GPIO);
         return &led;
     }
-
-    virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging)  override {
-        static bool last_discharging = false;
-        charging = power_manager_->IsCharging();
-        discharging = power_manager_->IsDischarging();
-        if (discharging != last_discharging) {
-            last_discharging = discharging;
-        }
-        level = std::max<uint32_t>(power_manager_->GetBatteryLevel(), 20);
-        return true;
-    }
-    
-    virtual bool GetTemperature(float& esp32temp)  override {
-        esp32temp = power_manager_->GetTemperature();
-        return true;
-    }
     
     virtual Backlight* GetBacklight() override {
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
         return &backlight;
     }
-
-    virtual Camera* GetCamera() override {
-        return camera_;
-    }
 };
 
-DECLARE_BOARD(ZhengchenCamBoard);
+DECLARE_BOARD(AIoTS3Lcd24ML307);
