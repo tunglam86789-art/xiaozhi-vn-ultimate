@@ -22,10 +22,10 @@
 static const char* TAG = "Esp32SdMusic";
 
 // ================================================================
-//  UTILITY HÀM TỰ DO (UTF-8, tên, thời gian, gợi ý)
+//  UTILITY OF FREE FUNCTIONS (UTF-8, name, time, hint)
 // ================================================================
 
-// Chuẩn hóa về lowercase nhưng chỉ động tới ASCII (giữ nguyên UTF-8 đa byte)
+// Normalize to lowercase but only affect ASCII (keep multi-byte UTF-8 unchanged)
 static std::string ToLowerAscii(const std::string& s)
 {
     std::string out = s;
@@ -112,7 +112,7 @@ static std::string NormalizeForSearch(const std::string& s)
     return out;
 }
 
-// Kiểm tra đuôi file (ví dụ ".mp3", ".wav", ...)
+// Check file extension (e.g., ".mp3", ".wav", ...)
 static bool HasExtension(const std::string& path, const char* ext)
 {
     if (!ext) return false;
@@ -122,7 +122,7 @@ static bool HasExtension(const std::string& path, const char* ext)
     return memcmp(low.data() + low.size() - len_ext, ext, len_ext) == 0;
 }
 
-// Định dạng audio hỗ trợ trên SD
+// Supported audio formats on SD
 enum class SdAudioFormat : uint8_t {
     Unknown = 0,
     Mp3,
@@ -145,7 +145,7 @@ static SdAudioFormat DetectAudioFormat(const std::string& path)
     return SdAudioFormat::Unknown;
 }
 
-// Parse header WAV PCM 16-bit đơn giản (RIFF/WAVE/fmt/data)
+// Parse header WAV PCM 16-bit simple (RIFF/WAVE/fmt/data)
 static bool ParseWavHeader(FILE* fp,
                            int& sample_rate,
                            int& channels,
@@ -178,12 +178,12 @@ static bool ParseWavHeader(FILE* fp,
 
     if (audio_format != 1 || bitsPerSample != 16 ||
         num_channels == 0 || sampleRate == 0) {
-        // Chỉ hỗ trợ PCM 16-bit
+        // Only PCM 16-bit is supported
         return false;
     }
 
     if (memcmp(header + 36, "data", 4) != 0) {
-        // Layout phức tạp hơn (chunk khác) không hỗ trợ ở đây
+        // More complex layout (different chunk) is not supported here
         return false;
     }
 
@@ -200,7 +200,7 @@ static bool ParseWavHeader(FILE* fp,
     return true;
 }
 
-// Score cho chế độ gợi ý (tên tương tự + cùng thư mục + tần suất phát)
+// Score for suggestion mode (similar name + same directory + play count)
 static int ComputeTrackScoreForBase(const Esp32SdMusic::TrackInfo& base,
                                     const Esp32SdMusic::TrackInfo& cand,
                                     uint32_t cand_play_count)
@@ -243,7 +243,7 @@ static int ComputeTrackScoreForBase(const Esp32SdMusic::TrackInfo& base,
 }
 
 // ================================================================
-//  BẢNG TRA GENRE ID3v1
+//  ID3v1 GENRE TABLE
 // ================================================================
 static const char* kId3v1Genres[] = {
     "Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge",
@@ -271,7 +271,7 @@ static const char* Id3v1GenreNameFromIndex(int idx)
 }
 
 // ================================================================
-//  Đọc ID3v1 (cuối file) — rất nhẹ, không dính tới ID3v2
+//  Read ID3v1 (end of file) — very lightweight, does not touch ID3v2
 // ================================================================
 static void ReadId3v1(const std::string& path,
                       Esp32SdMusic::TrackInfo& info)
@@ -330,8 +330,8 @@ static void ReadId3v1(const std::string& path,
 }
 
 // ================================================================
-//   Đọc ID3v2 SAFETY MODE (không load toàn bộ header vào RAM)
-//   Chỉ đọc TIT2 (title), TPE1 (artist), TALB (album), TYER (year), TCON (genre)
+//   Read ID3v2 SAFETY MODE (does not load the entire header into RAM)
+//   Only reads TIT2 (title), TPE1 (artist), TALB (album), TYER (year), TCON (genre)
 // ================================================================
 static std::string Utf16ToUtf8(const uint8_t* data, size_t len, bool big_endian)
 {
@@ -345,7 +345,7 @@ static std::string Utf16ToUtf8(const uint8_t* data, size_t len, bool big_endian)
         else
             ch = (data[i] << 8) | data[i + 1];
 
-        // Basic UTF-16 (không xử lý surrogate vì ID3 ít dùng)
+        // Basic UTF-16 (does not handle surrogate pairs because ID3 rarely uses them)
         if (ch < 0x80) {
             out.push_back((char)ch);
         } else if (ch < 0x800) {
@@ -368,12 +368,12 @@ static std::string TrimNull(const std::string& s)
     return s.substr(0, end);
 }
 
-// Chuẩn hóa giá trị TCON (genre ID3v2)
+// Normalize TCON value (ID3v2 genre)
 static std::string NormalizeTcon(const std::string& raw)
 {
     std::string s = TrimNull(raw);
 
-    // Trim space đầu/cuối
+    // Trim leading/trailing spaces
     while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
 
@@ -507,7 +507,7 @@ static void ReadId3v2_Safe(const std::string& path,
     fclose(f);
 }
 
-// Escape chuỗi sang JSON string
+// Escape string to JSON string
 static std::string JsonEscape(const std::string& in)
 {
     std::string out;
@@ -536,7 +536,7 @@ static std::string JsonEscape(const std::string& in)
 
 // ============================================================================
 //                         PART 1 / 3
-//      CTOR / DTOR / PLAYLIST / THƯ MỤC / ĐẾM BÀI / CHIA TRANG
+//      CTOR / DTOR / PLAYLIST / DIRECTORY / TRACK COUNT / PAGINATION
 // ============================================================================
 
 Esp32SdMusic::Esp32SdMusic()
@@ -575,9 +575,9 @@ void Esp32SdMusic::Initialize(class SdCard* sd_card) {
     }
 }
 
-// Playlist loading — sử dụng playlist.json
-// Nếu chưa có / hỏng / rỗng → quét lại và lưu playlist.json
-// Nếu file đã có nội dung hợp lệ → chỉ đọc, không quét
+// Playlist loading — using playlist.json
+// If not available / corrupted / empty → rescan and save playlist.json
+// If the file has valid content → only read, do not scan
 bool Esp32SdMusic::loadTrackList()
 {
     std::vector<TrackInfo> list;
@@ -590,8 +590,8 @@ bool Esp32SdMusic::loadTrackList()
         root_directory_ = sd_card_->GetMountPoint();
     }
 
-    // Playlist theo thư mục gốc hiện tại
-    // Ví dụ: /sdcard/playlist.json hoặc /sdcard/Music/playlist.json
+    // Playlist by current root directory
+    // For example: /sdcard/playlist.json or /sdcard/Music/playlist.json
     std::string playlist_path = root_directory_ + "/playlist.json";
 
     bool loaded = loadPlaylistFromFile(playlist_path, list);
@@ -603,7 +603,7 @@ bool Esp32SdMusic::loadTrackList()
         ESP_LOGI(TAG, "Scanning SD card: %s", root_directory_.c_str());
         scanDirectoryRecursive(root_directory_, list);
 
-        // Lưu playlist.json (kể cả khi list rỗng, coi như playlist trống)
+        // Save playlist.json (even if the list is empty, consider it as an empty playlist)
         if (!savePlaylistToFile(playlist_path, list)) {
             ESP_LOGE(TAG, "Failed to save playlist.json: %s", playlist_path.c_str());
             return false;
@@ -646,7 +646,7 @@ Esp32SdMusic::TrackInfo Esp32SdMusic::getTrackInfo(int index) const
     return playlist_[index];
 }
 
-// Gom code build path + resolve FAT short / case-insensitive
+// Build full path + resolve FAT short / case-insensitive
 bool Esp32SdMusic::resolveDirectoryRelative(const std::string& relative_dir,
                                             std::string& out_full)
 {
@@ -716,7 +716,7 @@ bool Esp32SdMusic::playDirectory(const std::string& relative_dir)
     return play();
 }
 
-// Tìm index theo keyword (tên hoặc path)
+// Find index by keyword (name or path)
 int Esp32SdMusic::findTrackIndexByKeyword(const std::string& keyword) const
 {
     if (keyword.empty()) return -1;
@@ -961,11 +961,11 @@ void Esp32SdMusic::scanDirectoryRecursive(
         t.path      = full;
         t.file_size = st.st_size;
 
-        // ID3v2 (ưu tiên) → nếu thiếu fallback ID3v1
+        // ID3v2 (priority) → fallback to ID3v1 if missing
         ReadId3v2_Safe(full, t);
         ReadId3v1(full, t);
 
-        // Tên hiển thị: ưu tiên title, fallback tên file (không extension)
+        // Display name: priority to title, fallback to file name (without extension)
         if (!t.title.empty())
             t.name = t.title;
         else
@@ -977,8 +977,8 @@ void Esp32SdMusic::scanDirectoryRecursive(
     closedir(d);
 }
 
-// Rebuild playlist theo yêu cầu người dùng (MCP gọi hàm này)
-// Bỏ qua nội dung playlist.json hiện tại, luôn quét lại và ghi đè
+// Rebuild playlist according to user request (MCP calls this function)
+// Ignore the current playlist.json content, always rescan and overwrite
 bool Esp32SdMusic::rebuildPlaylistFromSd()
 {
     std::vector<TrackInfo> list;
@@ -1019,7 +1019,7 @@ bool Esp32SdMusic::rebuildPlaylistFromSd()
     return !playlist_.empty();
 }
 
-// Playlist JSON: lưu đủ metadata cần thiết để search/tìm bài (không lưu ảnh bìa)
+// JSON Playlist: stores all the necessary metadata for searching/finding songs (does not store cover art).
 bool Esp32SdMusic::savePlaylistToFile(const std::string& playlist_path,
                                       const std::vector<TrackInfo>& list) const
 {
@@ -1039,7 +1039,7 @@ bool Esp32SdMusic::savePlaylistToFile(const std::string& playlist_path,
     for (size_t i = 0; i < list.size(); ++i) {
         const auto& t = list[i];
 
-        // Chuẩn bị chuỗi đã escape
+        // Prepare the escape sequence.
         std::string name    = JsonEscape(t.name.empty()
                                          ? ExtractBaseNameNoExt(t.path)
                                          : t.name);
@@ -1056,7 +1056,7 @@ bool Esp32SdMusic::savePlaylistToFile(const std::string& playlist_path,
         int bitrate      = t.bitrate_kbps;
         unsigned long long file_size = (unsigned long long)t.file_size;
 
-        // Bắt đầu object
+        // Start object
         fprintf(fp, "    {\n");
         fprintf(fp, "      \"name\": \"%s\",\n",    name.c_str());
         fprintf(fp, "      \"path\": \"%s\",\n",    path.c_str());
@@ -1081,7 +1081,7 @@ bool Esp32SdMusic::savePlaylistToFile(const std::string& playlist_path,
 
     ESP_LOGI(TAG, "Playlist file (JSON) saved: %s (%u tracks)",
              playlist_path.c_str(), (unsigned)written);
-    // Cho phép playlist rỗng (0 track) vẫn coi là thành công
+    // Allow empty playlist (0 tracks) to be considered successful
     return true;
 }
 
@@ -1187,7 +1187,7 @@ bool Esp32SdMusic::loadPlaylistFromFile(const std::string& playlist_path,
         t.bitrate_kbps = getInt("bitrate_kbps");
         t.file_size    = getSizeT("file_size");
 
-        // Không dùng cover_* trong playlist (luôn 0 / rỗng)
+        // Do not use cover_* in playlists (it's always 0 / empty).
         t.cover_size = 0;
         t.cover_mime.clear();
 
@@ -1209,7 +1209,7 @@ bool Esp32SdMusic::loadPlaylistFromFile(const std::string& playlist_path,
 
 std::string Esp32SdMusic::resolveLongName(const std::string& path)
 {
-    // Không xử lý short-name 8.3 → trả nguyên đường dẫn
+    // Do not handle short-name 8.3 → return the original path
     return path;
 }
 
@@ -1330,11 +1330,6 @@ bool Esp32SdMusic::play()
 
     // Stop any current playback
     StopStream();
-
-    auto& app = Application::GetInstance();
-    app.StopListening();
-    app.GetAudioService().EnableWakeWordDetection(false);
-    app.SetDeviceState(kDeviceStateSpeaking);
 
     TrackInfo track;
     {
@@ -1718,7 +1713,7 @@ void Esp32SdMusic::handleNextTrack()
 
 // ============================================================================
 //                         PART 3 / 3
-//      DECODER UTIL / STATE / PROGRESS / GỢI Ý BÀI HÁT
+//      DECODER UTIL / STATE / PROGRESS / SONG SUGGESTIONS
 // ============================================================================
 
 Esp32SdMusic::TrackProgress Esp32SdMusic::updateProgress() const
@@ -1768,7 +1763,7 @@ std::string Esp32SdMusic::getCurrentTimeString() const
     return MsToTimeString(GetPlayTimeMs());
 }
 
-// Gợi ý bài tiếp theo dựa trên lịch sử phát
+// Suggest the next track based on play history
 std::vector<Esp32SdMusic::TrackInfo>
 Esp32SdMusic::suggestNextTracks(size_t max_results)
 {
@@ -1828,7 +1823,7 @@ Esp32SdMusic::suggestNextTracks(size_t max_results)
     return results;
 }
 
-// Gợi ý bài giống bài X
+// Suggest tracks similar to track X
 std::vector<Esp32SdMusic::TrackInfo>
 Esp32SdMusic::suggestSimilarTo(const std::string& name_or_path,
                                size_t max_results)
@@ -1897,7 +1892,7 @@ Esp32SdMusic::suggestSimilarTo(const std::string& name_or_path,
     return results;
 }
 
-// Tạo danh sách bài theo thể loại (genre từ ID3v1 / ID3v2)
+// Build a playlist by genre (from ID3v1 / ID3v2)
 bool Esp32SdMusic::buildGenrePlaylist(const std::string& genre)
 {
     std::string kw = ToLowerAscii(genre);

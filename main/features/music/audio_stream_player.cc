@@ -153,8 +153,6 @@ bool AudioStreamPlayer::StopStream()
     ESP_LOGI(TAG, "StopStream: src=%d, play=%d",
              is_source_active_.load(), is_playing_.load());
 
-    ResetSampleRate();
-
     is_source_active_ = false;
     is_playing_       = false;
     is_paused_        = false;
@@ -204,7 +202,7 @@ bool AudioStreamPlayer::StopStream()
 
     ClearAudioBuffer();
     CleanupDecoder();
-
+    ResetSampleRate();
     OnPlaybackFinished();
 
     ESP_LOGI(TAG, "Stream stopped");
@@ -408,6 +406,8 @@ void AudioStreamPlayer::PlayLoop()
     current_play_time_ms_ = 0;
     total_frames_decoded_ = 0;
 
+    HandlePauseAndDeviceState();
+
     auto codec = Board::GetInstance().GetAudioCodec();
     if (!codec) {
         ESP_LOGE(TAG, "Audio codec not available");
@@ -445,10 +445,6 @@ void AudioStreamPlayer::PlayLoop()
     fft_pcm_ptr_ = nullptr;
     CleanupDecoder();
 
-    /* Re-enable audio output */
-    auto codec2 = Board::GetInstance().GetAudioCodec();
-    if (codec2) codec2->EnableOutput(true);
-
     /* Notify subclass if playback ended naturally */
     if (was_playing) {
         ClearAudioBuffer();
@@ -473,10 +469,12 @@ bool AudioStreamPlayer::HandlePauseAndDeviceState()
 
     /* Device state check */
     auto& app = Application::GetInstance();
+    app.GetAudioService().UpdateOutputTimestamp();
     DeviceState ds = app.GetDeviceState();
     if (ds == kDeviceStateListening || ds == kDeviceStateSpeaking) {
         app.ToggleChatState();
         vTaskDelay(pdMS_TO_TICKS(AUDIO_CHAT_TOGGLE_DELAY_MS));
+        app.SetDeviceState(kDeviceStateIdle);
         return true;  /* continue loop */
     } else if (ds != kDeviceStateIdle) {
         vTaskDelay(pdMS_TO_TICKS(AUDIO_STATE_POLL_MS));
@@ -626,7 +624,7 @@ void AudioStreamPlayer::PlayLoopCompressed()
         }
 
         if (input_bytes_left_ <= 0) {
-            vTaskDelay(pdMS_TO_TICKS(2));
+            vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
@@ -655,6 +653,8 @@ void AudioStreamPlayer::PlayLoopCompressed()
         esp_audio_err_t ret = esp_audio_simple_dec_process(decoder_, &raw, &out);
 
         if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+            ESP_LOGI(TAG, "Decoder needs bigger output buffer: %zu bytes",
+                     out.needed_size);
             if (decoder_type_ == AudioDecoderType::AAC) {
                 dec_out_vec_.resize(out.needed_size);
             } else {
@@ -673,19 +673,32 @@ void AudioStreamPlayer::PlayLoopCompressed()
                 memmove(input_buffer_, input_buffer_ + raw.consumed, input_bytes_left_);
         }
 
-        if (ret == ESP_AUDIO_ERR_DATA_LACK) { vTaskDelay(pdMS_TO_TICKS(2)); continue; }
-        if (ret == ESP_AUDIO_ERR_CONTINUE) continue;
+        if (ret == ESP_AUDIO_ERR_DATA_LACK) { 
+            ESP_LOGI(TAG, "Decoder needs more data to continue");
+            vTaskDelay(pdMS_TO_TICKS(20)); continue; 
+        }
+
+        if (ret == ESP_AUDIO_ERR_CONTINUE) {
+            ESP_LOGI(TAG, "Decoder requests to continue without new input");
+            continue;
+        }
+        
         if (ret != ESP_AUDIO_ERR_OK) {
+            ESP_LOGE(TAG, "Decoder error: %d", ret);
             if (input_bytes_left_ > 0) {
                 input_bytes_left_--;
                 memmove(input_buffer_, input_buffer_ + 1, input_bytes_left_);
             }
-            vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
         /* Successful decode */
-        esp_audio_simple_dec_get_info(decoder_, &dec_info_);
+        ret = esp_audio_simple_dec_get_info(decoder_, &dec_info_);
+        if (ret != ESP_AUDIO_ERR_OK) {
+            ESP_LOGE(TAG, "Failed to get decoder info: %d", ret);
+            continue;
+        }
 
         if (!dec_info_ready_ && dec_info_.sample_rate > 0) {
             dec_info_ready_ = true;

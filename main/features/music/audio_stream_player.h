@@ -91,7 +91,7 @@ extern "C" {
 #define AUDIO_STATE_POLL_MS         50
 
 /** Delay after toggling chat state (ms) */
-#define AUDIO_CHAT_TOGGLE_DELAY_MS  300
+#define AUDIO_CHAT_TOGGLE_DELAY_MS  500
 
 /** WAV PCM block size in samples (matching MP3 frame) */
 #define AUDIO_WAV_BLOCK_SAMPLES     (1152 * 2)

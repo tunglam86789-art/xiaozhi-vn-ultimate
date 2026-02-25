@@ -287,10 +287,12 @@ void Application::ToggleChatState() {
     } else if (device_state_ == kDeviceStateSpeaking) {
         Schedule([this]() {
             AbortSpeaking(kAbortReasonNone);
+            ESP_LOGI(TAG, "Stopped speaking by user");
         });
     } else if (device_state_ == kDeviceStateListening) {
         Schedule([this]() {
             protocol_->CloseAudioChannel();
+            ESP_LOGI(TAG, "Stopped listening by user");
         });
     }
 }
