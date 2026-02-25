@@ -3,7 +3,6 @@
 
 #include <string>
 #include <vector>
-#include <thread>
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
@@ -11,8 +10,12 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 extern "C" {
-#include "mp3dec.h"
+#include "esp_audio_simple_dec.h"
+#include "esp_audio_simple_dec_default.h"
 }
 
 class Esp32SdMusic {
@@ -186,6 +189,7 @@ private:
     // ============================================================
     // Playback Thread
     // ============================================================
+    static void PlaybackTaskEntry(void* param);
     void playbackThreadFunc();
     bool decodeAndPlayFile(const TrackInfo& track);
     void joinPlaybackThreadWithTimeout();
@@ -212,8 +216,8 @@ private:
     int current_index_ = -1;
     std::vector<uint32_t> play_count_;
 
-    // Playback state / thread
-    std::thread playback_thread_;
+    // Playback state / task
+    TaskHandle_t playback_task_handle_;
     std::atomic<bool> stop_requested_;
     std::atomic<bool> pause_requested_;
     std::atomic<PlayerState> state_;
@@ -232,10 +236,10 @@ private:
     // FFT buffer (display owns memory)
     int16_t* final_pcm_data_fft_;
 
-    // mini-mp3 decoder
-    void* mp3_decoder_;
+    // esp_audio_simple_dec MP3 decoder
+    esp_audio_simple_dec_handle_t mp3_decoder_;
     bool mp3_decoder_initialized_;
-    MP3FrameInfo mp3_frame_info_{};
+    esp_audio_simple_dec_info_t mp3_frame_info_{};
 
     // Playlist theo thể loại
     std::vector<int> genre_playlist_;

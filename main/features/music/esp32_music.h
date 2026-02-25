@@ -1,123 +1,101 @@
 #ifndef ESP32_MUSIC_H
 #define ESP32_MUSIC_H
 
-#include <string>
-#include <thread>
-#include <atomic>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
-#include <vector>
+/**
+ * @file esp32_music.h
+ * @brief Online music player – inherits AudioStreamPlayer.
+ *
+ * Responsibilities:
+ *   - Song search via HTTP API (with ESP32 auth)
+ *   - Builds streaming URL and delegates playback to base class
+ *   - Lyrics management (via LyricManager)
+ *   - Display of song metadata on LCD
+ */
 
+#include <string>
+#include <atomic>
+
+#include "audio_stream_player.h"
+#include "lyric_manager.h"
 #include "music.h"
 
-// MP3 decoder support - using esp_audio_codec (simple decoder)
-extern "C" {
-#include "esp_audio_simple_dec.h"
-#include "esp_audio_simple_dec_default.h"
-}
+/* ------------------------------------------------------------------ */
+/*  Macros                                                            */
+/* ------------------------------------------------------------------ */
 
-// Audio data chunk structure
-struct AudioChunk {
-    uint8_t* data;
-    size_t size;
-    
-    AudioChunk() : data(nullptr), size(0) {}
-    AudioChunk(uint8_t* d, size_t s) : data(d), size(s) {}
-};
+/** Default music server URL */
+#define DEFAULT_MUSIC_URL       "http://www.xiaozhishop.xyz:5005"
 
-class Esp32Music : public Music {
-public:
-    // Display mode control - moved to public section
-    enum DisplayMode {
-        DISPLAY_MODE_SPECTRUM = 0,  // Default: display spectrum
-        DISPLAY_MODE_LYRICS = 1     // Display lyrics
-    };
+/** Lyric buffer latency compensation (ms) */
+#define LYRIC_LATENCY_OFFSET_MS 600
 
-private:
-    std::string last_downloaded_data_;
-    std::string current_music_url_;
-	std::string artist_name_;   
-    std::string title_name_;
-    std::string current_song_name_;
-    bool song_name_displayed_;
-	bool full_info_displayed_;
-	bool fft_started_ = false;
-    
-    // Lyrics-related
-    std::string current_lyric_url_;
-    std::vector<std::pair<int, std::string>> lyrics_;  // Timestamp and lyric text
-    std::mutex lyrics_mutex_;  // Mutex to protect the lyrics_ array
-    std::atomic<int> current_lyric_index_;
-    std::thread lyric_thread_;
-    std::atomic<bool> is_lyric_running_;
-    
-    std::atomic<DisplayMode> display_mode_;
-    std::atomic<bool> is_playing_;
-    std::atomic<bool> is_downloading_;
-    std::thread play_thread_;
-    std::thread download_thread_;
-    int64_t current_play_time_ms_;  // Current playback time (milliseconds)
-    int64_t last_frame_time_ms_;    // Timestamp of the last frame
-    int total_frames_decoded_;      // Total number of decoded frames
+/* ------------------------------------------------------------------ */
+/*  Esp32Music                                                        */
+/* ------------------------------------------------------------------ */
 
-    // Audio buffer
-    std::queue<AudioChunk> audio_buffer_;
-    std::mutex buffer_mutex_;
-    std::condition_variable buffer_cv_;
-    size_t buffer_size_;
-    static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;  // 256KB buffer (reduced to minimize brownout risk)
-    static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;   // 32KB minimum playback buffer (reduced to minimize brownout risk)
-    
-    // MP3 decoder-related (esp_audio_codec simple decoder)
-    esp_audio_simple_dec_handle_t mp3_decoder_;
-    esp_audio_simple_dec_info_t mp3_frame_info_;
-    bool mp3_decoder_initialized_;
-    uint8_t* pcm_out_buffer_;       // Reusable PCM output buffer for decoder
-    size_t pcm_out_buffer_size_;    // Size of PCM output buffer
-    
-    // Private methods
-    void DownloadAudioStream(const std::string& music_url);
-    void PlayAudioStream();
-    void ClearAudioBuffer();
-    bool InitializeMp3Decoder();
-    void CleanupMp3Decoder();
-    void ResetSampleRate();  // Reset sample rate to the original value
-    size_t FindMp3SyncWord(uint8_t* data, size_t size);  // Find MP3 sync word in buffer
-    
-    // Lyrics-related private methods
-    bool DownloadLyrics(const std::string& lyric_url);
-    bool ParseLyrics(const std::string& lyric_content);
-    void LyricDisplayThread();
-    void UpdateLyricDisplay(int64_t current_time_ms);
-    
-    // ID3 tag handling
-    size_t SkipId3Tag(uint8_t* data, size_t size);
-
-    int16_t* final_pcm_data_fft = nullptr;
-
+class Esp32Music : public Music, public AudioStreamPlayer {
 public:
     Esp32Music();
-    ~Esp32Music();
+    virtual ~Esp32Music();
 
     void Initialize();
 
-    virtual bool Download(const std::string& song_name, const std::string& artist_name) override;
-  
-    virtual std::string GetDownloadResult() override;
-    
-    // New methods
-    virtual bool StartStreaming(const std::string& music_url) override;
-    virtual bool StopStreaming() override;  // Stop streaming playback
-    virtual size_t GetBufferSize() const override { return buffer_size_; }
-    virtual bool IsDownloading() const override { return is_downloading_; }
-    virtual int16_t* GetAudioData() override { return final_pcm_data_fft; }
-    virtual bool IsPlaying() const override { return is_playing_; }
-    
-    // Display mode control methods
-    void SetDisplayMode(DisplayMode mode);
-    DisplayMode GetDisplayMode() const { return display_mode_.load(); }
+    /* ---- Music interface ---- */
+    bool Download(const std::string& song_name, const std::string& artist_name = "") override;
+    std::string GetDownloadResult() override;
+
+    bool StartStreaming(const std::string& music_url) override;
+    bool StopStreaming() override;
+
+    size_t GetBufferSize() const override { return AudioStreamPlayer::GetBufferSize(); }
+    bool IsDownloading() const override   { return AudioStreamPlayer::IsDownloading(); }
+    int16_t* GetAudioData() override      { return AudioStreamPlayer::GetAudioData(); }
+    bool IsPlaying() const override       { return AudioStreamPlayer::IsPlaying(); }
+
+    /* ---- Display mode (re-expose base enum with LYRICS alias) ---- */
+    using AudioStreamPlayer::DisplayMode;
+    static constexpr DisplayMode DISPLAY_MODE_LYRICS = DISPLAY_MODE_INFO;
+
+    void SetDisplayMode(DisplayMode mode) { AudioStreamPlayer::SetDisplayMode(mode); }
+    DisplayMode GetDisplayMode() const    { return AudioStreamPlayer::GetDisplayMode(); }
+
+    /** Get music server URL from settings (or default). */
     std::string GetCheckMusicServerUrl();
+
+protected:
+    /* ---- AudioStreamPlayer hooks ---- */
+    void OnPrepareHttp(void* http_ptr) override;
+    void OnStreamInfoReady(int sample_rate, int bits_per_sample, int channels) override;
+    void OnPcmFrame(int64_t play_time_ms, int sample_rate, int channels) override;
+    void OnPlaybackFinished() override;
+    void OnDisplayReady() override;
+
+private:
+    /* ---- Auth helpers ---- */
+    static std::string GetDeviceMac();
+    static std::string GetDeviceChipId();
+    static std::string GenerateDynamicKey(int64_t timestamp);
+    static void AddAuthHeaders(void* http_ptr);
+
+    /* ---- URL helpers ---- */
+    static std::string UrlEncode(const std::string& str);
+    static std::string BuildUrlWithParams(const std::string& base,
+                                          const std::string& path,
+                                          const std::string& query);
+
+    /* ---- State ---- */
+    std::string last_downloaded_data_;
+    std::string current_music_url_;
+    std::string artist_name_;
+    std::string title_name_;
+    std::string current_song_name_;
+    std::string current_lyric_url_;
+
+    bool song_name_displayed_;
+    bool full_info_displayed_;
+
+    /* ---- Lyrics ---- */
+    LyricManager lyric_mgr_;
 };
 
 #endif // ESP32_MUSIC_H

@@ -10,7 +10,6 @@
 #include <string>
 #include <vector>
 #include <algorithm>
-#include <chrono>
 #include <cctype>
 #include <cstdio>
 #include <unordered_set>
@@ -20,7 +19,6 @@
 #include <esp_heap_caps.h>
 #include "esp_audio_dec.h"
 #include "esp_audio_simple_dec_default.h"
-#include <esp_pthread.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "cJSON.h"
@@ -82,10 +80,10 @@ static std::string MsToTimeString(int64_t ms)
     return std::string(buf);
 }
 
-// Chuẩn hóa chuỗi cho tìm kiếm:
-// - lower ASCII
-// - gom ' ', '_', '-', '.', '/', '\\' thành 1 khoảng trắng
-// - giữ nguyên byte UTF-8 đa byte
+// Normalize string for searching:
+// - lowercase ASCII
+// - collapse ' ', '_', '-', '.', '/', '\\' into a single space
+// - keep multi-byte UTF-8 bytes unchanged
 static std::string NormalizeForSearch(const std::string& s)
 {
     std::string lower = ToLowerAscii(s);
@@ -551,7 +549,7 @@ Esp32SdMusic::Esp32SdMusic()
       playlist_mutex_(),
       current_index_(-1),
       play_count_(),
-      playback_thread_(),
+      playback_task_handle_(nullptr),
       stop_requested_(false),
       pause_requested_(false),
       state_(PlayerState::Stopped),
@@ -607,21 +605,31 @@ void Esp32SdMusic::Initialize(class SdCard* sd_card) {
     }
 }
 
+void Esp32SdMusic::PlaybackTaskEntry(void* param)
+{
+    auto* self = static_cast<Esp32SdMusic*>(param);
+    self->playbackThreadFunc();
+    self->playback_task_handle_ = nullptr;
+    vTaskDelete(nullptr);
+}
+
 void Esp32SdMusic::joinPlaybackThreadWithTimeout()
 {
-    if (!playback_thread_.joinable()) return;
+    if (playback_task_handle_ == nullptr) return;
 
-    auto deadline = std::chrono::steady_clock::now() +
-                    std::chrono::milliseconds(120);
+    const int kMaxWaitMs = 120;
+    const int kPollMs    = 10;
+    int waited = 0;
 
-    while (playback_thread_.joinable() &&
-           std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    while (playback_task_handle_ != nullptr && waited < kMaxWaitMs) {
+        vTaskDelay(pdMS_TO_TICKS(kPollMs));
+        waited += kPollMs;
     }
 
-    if (playback_thread_.joinable()) {
-        ESP_LOGE(TAG, "Thread stuck → force detach()");
-        playback_thread_.detach();
+    if (playback_task_handle_ != nullptr) {
+        ESP_LOGE(TAG, "Task stuck after %d ms — force delete", kMaxWaitMs);
+        vTaskDelete(playback_task_handle_);
+        playback_task_handle_ = nullptr;
     }
 }
 
@@ -1399,14 +1407,21 @@ bool Esp32SdMusic::play()
         state_.store(PlayerState::Preparing);
     }
 
-    esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
-    cfg.stack_size  = 8192;
-    cfg.prio        = 5;
-    cfg.thread_name = (char*)"sd_music_play";
-    esp_pthread_set_cfg(&cfg);
-
-    ESP_LOGI(TAG, "Starting playback thread");
-    playback_thread_ = std::thread(&Esp32SdMusic::playbackThreadFunc, this);
+    ESP_LOGI(TAG, "Starting playback task");
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        PlaybackTaskEntry,
+        "sd_music_play",
+        8192,
+        this,
+        5,
+        &playback_task_handle_,
+        1  /* core 1 */
+    );
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create playback task");
+        state_.store(PlayerState::Error);
+        return false;
+    }
 
     return true;
 }
@@ -2028,7 +2043,7 @@ bool Esp32SdMusic::decodeAndPlayFile(const TrackInfo& track)
     }
 
     // ==============================
-    //  NHÁNH MP3 (mini-MP3 decoder)
+    //  NHÁNH MP3 (esp_audio_simple_dec)
     // ==============================
     if (!mp3_decoder_initialized_ && !initializeMp3Decoder()) {
         state_.store(PlayerState::Error);
@@ -2058,20 +2073,10 @@ bool Esp32SdMusic::decodeAndPlayFile(const TrackInfo& track)
         return false;
     }
 
-    int16_t* pcm = (int16_t*) heap_caps_malloc(
-        2304 * sizeof(int16_t),
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!pcm) {
-        ESP_LOGE(TAG, "Cannot allocate PCM buffer");
-        heap_caps_free(input);
-        fclose(fp);
-        return false;
-    }
+    std::vector<int16_t> tmp_out(INPUT_BUF * 4);
+    std::vector<int16_t> mono_buf;
 
-    int bytes_left   = 0;
-    uint8_t* read_ptr = input;
-    bool id3_done    = false;
-
+    bool info_ready = false;
     current_play_time_ms_ = 0;
     total_duration_ms_    = 0;
 
@@ -2107,134 +2112,140 @@ bool Esp32SdMusic::decodeAndPlayFile(const TrackInfo& track)
             }
         }
 
-        if (bytes_left < 1024) {
-            if (bytes_left > 0 && read_ptr != input) {
-                memmove(input, read_ptr, bytes_left);
+        size_t read_bytes = fread(input, 1, INPUT_BUF, fp);
+        bool input_eos = (read_bytes == 0);
+
+        if (read_bytes == 0 && !input_eos) {
+            ESP_LOGI(TAG, "EOF reached (MP3 simple-dec)");
+            break;
+        }
+
+        esp_audio_simple_dec_raw_t raw = {};
+        raw.buffer = input;
+        raw.len    = read_bytes;
+        raw.eos    = input_eos;
+
+        while ((raw.len > 0 || input_eos) && !stop_requested_) {
+            esp_audio_simple_dec_out_t out = {};
+            out.buffer = reinterpret_cast<uint8_t*>(tmp_out.data());
+            out.len    = tmp_out.size() * sizeof(int16_t);
+
+            esp_audio_err_t dec_ret = esp_audio_simple_dec_process(mp3_decoder_, &raw, &out);
+            if (dec_ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+                tmp_out.resize(out.needed_size / (int)sizeof(int16_t) + 1);
+                continue;
             }
-
-            size_t space = INPUT_BUF - bytes_left;
-            size_t read_bytes = fread(input + bytes_left, 1, space, fp);
-            if (stop_requested_) break;
-
-            bytes_left += read_bytes;
-            read_ptr = input;
-
-            if (!id3_done && bytes_left >= 10) {
-                size_t skip = SkipId3Tag(read_ptr, bytes_left);
-                if (skip > 0 && skip <= (size_t)bytes_left) {
-                    read_ptr  += skip;
-                    bytes_left -= skip;
-                    ESP_LOGI(TAG, "ID3v2 header skipped (%u bytes)", (unsigned)skip);
-                }
-                id3_done = true;
-            }
-
-            if (read_bytes == 0 && bytes_left == 0) {
-                ESP_LOGI(TAG, "EOF reached");
+            if (dec_ret != ESP_AUDIO_ERR_OK) {
+                ESP_LOGE(TAG, "MP3 decode error (simple-dec): %d", (int)dec_ret);
+                input_eos = true;
                 break;
             }
-        }
 
-        int off = MP3FindSyncWord(read_ptr, bytes_left);
-        if (off < 0) {
-            bytes_left = 0;
-            continue;
-        }
-
-        if (off > 0) {
-            read_ptr  += off;
-            bytes_left -= off;
-        }
-
-        int ret = MP3Decode(mp3_decoder_, &read_ptr, &bytes_left, pcm, 0);
-        if (stop_requested_) break;
-
-        if (ret != 0) {
-            if (bytes_left > 1) {
-                read_ptr++;
-                bytes_left--;
-            } else {
-                bytes_left = 0;
+            if (out.decoded_size == 0) {
+                if (input_eos && raw.len == 0) break;
+                if (raw.len == 0) break;
+                continue;
             }
-            continue;
-        }
 
-        MP3GetLastFrameInfo(mp3_decoder_, &mp3_frame_info_);
-        if (mp3_frame_info_.samprate == 0 ||
-            mp3_frame_info_.nChans   == 0) {
-            continue;
-        }
+            if (!info_ready) {
+                esp_audio_simple_dec_get_info(mp3_decoder_, &mp3_frame_info_);
+                info_ready = true;
+                ESP_LOGI(TAG, "MP3 stream info: %d Hz, %d bit, %d ch",
+                         mp3_frame_info_.sample_rate,
+                         mp3_frame_info_.bits_per_sample,
+                         mp3_frame_info_.channel);
 
-        if (codec->output_sample_rate() != mp3_frame_info_.samprate) {
-            ESP_LOGI(TAG, "Switch sample rate → %d Hz", mp3_frame_info_.samprate);
-            codec->SetOutputSampleRate(mp3_frame_info_.samprate);
-        }
+                if (codec->output_sample_rate() != mp3_frame_info_.sample_rate) {
+                    ESP_LOGI(TAG, "Switch sample rate → %d Hz", mp3_frame_info_.sample_rate);
+                    codec->SetOutputSampleRate(mp3_frame_info_.sample_rate);
+                }
 
-        if (!codec->output_enabled()) {
-            ESP_LOGW(TAG, "Audio output disabled - re-enabling.");
-            codec->EnableOutput(true);
-        }
+                if (!codec->output_enabled()) {
+                    ESP_LOGW(TAG, "Audio output disabled - re-enabling.");
+                    codec->EnableOutput(true);
+                }
 
-        int frame_ms =
-            (mp3_frame_info_.outputSamps * 1000) /
-            (mp3_frame_info_.samprate * mp3_frame_info_.nChans);
+                // Estimate duration from file size + bitrate (updated after first frame)
+                if (total_duration_ms_.load() == 0 &&
+                    file_size > 0 &&
+                    mp3_frame_info_.bitrate > 0) {
 
-        current_play_time_ms_ += frame_ms;
+                    total_duration_ms_ =
+                        (file_size * 8LL * 1000LL) / mp3_frame_info_.bitrate;
 
-        if (total_duration_ms_.load() == 0 &&
-            file_size > 0 &&
-            mp3_frame_info_.bitrate > 0) {
-
-            total_duration_ms_ =
-                (file_size * 8LL * 1000LL) / mp3_frame_info_.bitrate;
-
-            {
-                std::lock_guard<std::mutex> lock(playlist_mutex_);
-                if (current_index_ >= 0 &&
-                    current_index_ < (int)playlist_.size()) {
-                    auto& ti        = playlist_[current_index_];
-                    ti.duration_ms  = (int)total_duration_ms_.load();
-                    ti.bitrate_kbps = mp3_frame_info_.bitrate / 1000;
-                    ti.file_size    = (size_t)file_size;
+                    {
+                        std::lock_guard<std::mutex> lock(playlist_mutex_);
+                        if (current_index_ >= 0 &&
+                            current_index_ < (int)playlist_.size()) {
+                            auto& ti        = playlist_[current_index_];
+                            ti.duration_ms  = (int)total_duration_ms_.load();
+                            ti.bitrate_kbps = mp3_frame_info_.bitrate / 1000;
+                            ti.file_size    = (size_t)file_size;
+                        }
+                    }
                 }
             }
-        }
 
-        int16_t* final_pcm    = pcm;
-        int final_samples = mp3_frame_info_.outputSamps;
+            int bits_per_sample = (mp3_frame_info_.bits_per_sample > 0)
+                                  ? mp3_frame_info_.bits_per_sample : 16;
+            int bytes_per_sample = bits_per_sample / 8;
+            if (bytes_per_sample <= 0) bytes_per_sample = 2;
+            int channels = (mp3_frame_info_.channel > 0) ? mp3_frame_info_.channel : 2;
 
-        if (mp3_frame_info_.nChans == 2)
-        {
-            int mono_samples = final_samples / 2;
-            for (int i = 0; i < mono_samples; i++) {
-                int L = pcm[2 * i];
-                int R = pcm[2 * i + 1];
-                pcm[i] = (L + R) / 2;
+            int total_samples = out.decoded_size / bytes_per_sample;
+            if (total_samples <= 0) continue;
+
+            int16_t* pcm_in = reinterpret_cast<int16_t*>(out.buffer);
+            int16_t* final_pcm = nullptr;
+            int final_samples  = 0;
+
+            if (channels == 2) {
+                int samples_per_chan = total_samples / 2;
+                mono_buf.resize(samples_per_chan);
+                for (int i = 0; i < samples_per_chan; ++i) {
+                    int L = pcm_in[2 * i];
+                    int R = pcm_in[2 * i + 1];
+                    mono_buf[i] = (int16_t)((L + R) / 2);
+                }
+                final_pcm    = mono_buf.data();
+                final_samples = samples_per_chan;
+            } else {
+                mono_buf.assign(pcm_in, pcm_in + total_samples);
+                final_pcm    = mono_buf.data();
+                final_samples = total_samples;
             }
-            final_pcm    = pcm;
-            final_samples = mono_samples;
+
+            int frame_ms =
+                (mp3_frame_info_.sample_rate > 0)
+                    ? (final_samples * 1000) / mp3_frame_info_.sample_rate
+                    : 0;
+            current_play_time_ms_ += frame_ms;
+
+            AudioStreamPacket pkt;
+            pkt.sample_rate    = mp3_frame_info_.sample_rate;
+            pkt.frame_duration = frame_ms;
+            pkt.timestamp      = 0;
+
+            size_t pcm_bytes = final_samples * sizeof(int16_t);
+            pkt.payload.resize(pcm_bytes);
+            memcpy(pkt.payload.data(), final_pcm, pcm_bytes);
+
+            app.AddAudioData(std::move(pkt));
+
+            if (display) {
+                final_pcm_data_fft_ = display->MakeAudioBuffFFT(pcm_bytes);
+                display->FeedAudioDataFFT(final_pcm, pcm_bytes);
+            }
+
+            if (raw.len == 0) break;
         }
 
-        AudioStreamPacket pkt;
-        pkt.sample_rate    = mp3_frame_info_.samprate;
-        pkt.frame_duration =
-            (mp3_frame_info_.outputSamps * 1000) /
-            (mp3_frame_info_.samprate * mp3_frame_info_.nChans);
-        pkt.timestamp      = 0;
-
-        size_t pcm_bytes = final_samples * sizeof(int16_t);
-        pkt.payload.resize(pcm_bytes);
-        memcpy(pkt.payload.data(), final_pcm, pcm_bytes);
-
-        app.AddAudioData(std::move(pkt));
-
-        if (display) {
-            final_pcm_data_fft_ = display->MakeAudioBuffFFT(pcm_bytes);
-            display->FeedAudioDataFFT(final_pcm, pcm_bytes);
+        if (input_eos) {
+            ESP_LOGI(TAG, "Input EOS - finishing MP3 playback");
+            break;
         }
     }
 
-    heap_caps_free(pcm);
     heap_caps_free(input);
     fclose(fp);
 
@@ -2253,21 +2264,33 @@ bool Esp32SdMusic::initializeMp3Decoder()
         return true;
     }
 
-    mp3_decoder_ = MP3InitDecoder();
-    if (!mp3_decoder_) {
-        ESP_LOGE(TAG, "Failed to init MP3 decoder");
+    esp_audio_dec_register_default();
+    esp_audio_simple_dec_register_default();
+
+    esp_audio_simple_dec_cfg_t cfg = {};
+    cfg.dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3;
+    cfg.dec_cfg  = nullptr;
+    cfg.cfg_size = 0;
+
+    esp_audio_err_t ret = esp_audio_simple_dec_open(&cfg, &mp3_decoder_);
+    if (ret != ESP_AUDIO_ERR_OK || !mp3_decoder_) {
+        ESP_LOGE(TAG, "Failed to open MP3 simple decoder, err=%d", (int)ret);
+        esp_audio_simple_dec_unregister_default();
+        esp_audio_dec_unregister_default();
         return false;
     }
 
     mp3_decoder_initialized_ = true;
-    ESP_LOGI(TAG, "MP3 decoder initialized");
+    ESP_LOGI(TAG, "MP3 decoder initialized (esp_audio_simple_dec)");
     return true;
 }
 
 void Esp32SdMusic::cleanupMp3Decoder()
 {
     if (mp3_decoder_) {
-        MP3FreeDecoder(mp3_decoder_);
+        esp_audio_simple_dec_close(mp3_decoder_);
+        esp_audio_simple_dec_unregister_default();
+        esp_audio_dec_unregister_default();
         mp3_decoder_ = nullptr;
     }
     mp3_decoder_initialized_ = false;
