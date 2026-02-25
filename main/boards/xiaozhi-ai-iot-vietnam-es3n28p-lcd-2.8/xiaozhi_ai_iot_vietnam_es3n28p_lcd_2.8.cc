@@ -352,8 +352,8 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
               auto sd_music = app.GetSdMusic();
               if (sd_music) {
                 sd_music->stop();
-                sd_music->next();
                 vTaskDelay(pdMS_TO_TICKS(500));
+                sd_music->next();
               }
             } else {
               auto& board = Board::GetInstance();
@@ -381,8 +381,8 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
               auto sd_music = app.GetSdMusic();
               if (sd_music) {
                 sd_music->stop();
-                sd_music->prev();
                 vTaskDelay(pdMS_TO_TICKS(500));
+                sd_music->prev();
               }
               break;
             }

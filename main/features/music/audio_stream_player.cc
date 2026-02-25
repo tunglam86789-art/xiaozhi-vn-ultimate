@@ -406,7 +406,7 @@ void AudioStreamPlayer::PlayLoop()
     current_play_time_ms_ = 0;
     total_frames_decoded_ = 0;
 
-    HandlePauseAndDeviceState();
+    EnterIdleDeviceState();
 
     auto codec = Board::GetInstance().GetAudioCodec();
     if (!codec) {
@@ -459,28 +459,33 @@ void AudioStreamPlayer::PlayLoop()
 /*  Common helpers: pause check, device state, FFT start              */
 /* ================================================================== */
 
-bool AudioStreamPlayer::HandlePauseAndDeviceState()
+void AudioStreamPlayer::EnterIdleDeviceState()
+{
+    auto& app = Application::GetInstance();
+    DeviceState ds = app.GetDeviceState();
+    if (ds != kDeviceStateListening && ds != kDeviceStateSpeaking) {
+        return;
+    }
+
+    int counter = 0;
+    while (counter++ < 10) {
+        app.ToggleChatState();
+        vTaskDelay(pdMS_TO_TICKS(AUDIO_CHAT_TOGGLE_DELAY_MS));
+        ds = app.GetDeviceState();
+        if (ds == kDeviceStateIdle) {
+            ESP_LOGI(TAG, "Entered idle state");
+            break;
+        }
+    }
+}
+
+bool AudioStreamPlayer::HandlePause()
 {
     /* Pause check */
     if (is_paused_) {
         xSemaphoreTake(pause_sem_, portMAX_DELAY);
         if (!is_playing_) return false;
     }
-
-    /* Device state check */
-    auto& app = Application::GetInstance();
-    app.GetAudioService().UpdateOutputTimestamp();
-    DeviceState ds = app.GetDeviceState();
-    if (ds == kDeviceStateListening || ds == kDeviceStateSpeaking) {
-        app.ToggleChatState();
-        vTaskDelay(pdMS_TO_TICKS(AUDIO_CHAT_TOGGLE_DELAY_MS));
-        app.SetDeviceState(kDeviceStateIdle);
-        return true;  /* continue loop */
-    } else if (ds != kDeviceStateIdle) {
-        vTaskDelay(pdMS_TO_TICKS(AUDIO_STATE_POLL_MS));
-        return true;
-    }
-
     return true;
 }
 
@@ -584,7 +589,7 @@ void AudioStreamPlayer::PlayLoopCompressed()
     size_t log_counter  = 0;
 
     while (is_playing_) {
-        if (!HandlePauseAndDeviceState()) break;
+        if (!HandlePause()) break;
         StartFFTOnce();
 
         /* Fill input buffer from audio buffer */
@@ -772,7 +777,7 @@ void AudioStreamPlayer::PlayLoopWav()
     size_t total_played = 0;
 
     while (is_playing_) {
-        if (!HandlePauseAndDeviceState()) break;
+        if (!HandlePause()) break;
         StartFFTOnce();
 
         /* Get chunk from buffer */

@@ -1409,8 +1409,8 @@ void Esp32SdMusic::stop()
     }
 
     ESP_LOGI(TAG, "Stopping SD music playback");
-    StopStream();
     state_.store(PlayerState::Stopped);
+    StopStream();
     total_duration_ms_ = 0;
     ESP_LOGI(TAG, "SD music stopped successfully");
 }

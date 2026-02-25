@@ -766,6 +766,7 @@ void Application::SetListeningMode(ListeningMode mode) {
 
 void Application::SetDeviceState(DeviceState state) {
     if (device_state_ == state) {
+        ESP_LOGI(TAG, "Device state already in %s, no need to change", STATE_STRINGS[state]);
         return;
     }
     

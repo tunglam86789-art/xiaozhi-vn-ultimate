@@ -43,7 +43,7 @@ LcdTouch::LcdTouch(esp_lcd_touch_handle_t touch_handle, esp_lcd_panel_io_handle_
         instance->touch_driver_read(drv, data);
     });
 #else
-    xTaskCreatePinnedToCore(touch_event_task, "touch_task", 3 * 1024, this, 5, NULL, 0);
+    xTaskCreatePinnedToCore(touch_event_task, "touch_task", 4 * 1024, this, 5, NULL, 0);
 #endif
 #endif
 }

@@ -302,6 +302,10 @@ bool Esp32Music::StartStreaming(const std::string& music_url)
 
 bool Esp32Music::StopStreaming()
 {
+    if (!IsPlaying() && !IsDownloading()) {
+        return true;
+    }
+    
     ESP_LOGI(TAG, "StopStreaming");
     lyric_mgr_.Stop();
     bool ok = StopStream();

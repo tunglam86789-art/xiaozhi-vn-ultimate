@@ -234,7 +234,8 @@ private:
                         int sample_rate, int frame_duration_ms);
 
     /* ---- Common playback helpers ---- */
-    bool HandlePauseAndDeviceState();
+    void EnterIdleDeviceState();
+    bool HandlePause();
     void StartFFTOnce();
 
     /* ---- Buffer helpers ---- */
