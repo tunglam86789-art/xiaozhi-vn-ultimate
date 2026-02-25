@@ -74,9 +74,10 @@ void LyricManager::Stop()
 
     /* Wait for task to finish */
     if (task_handle_) {
-        for (int i = 0; i < 30; ++i) {
-            if (eTaskGetState(task_handle_) == eDeleted) break;
+        for (int i = 0; i < 30 && task_handle_; ++i) {
             vTaskDelay(pdMS_TO_TICKS(100));
+            if (task_handle_ == nullptr) break;
+            if (eTaskGetState(task_handle_) == eDeleted) break;
         }
         task_handle_ = nullptr;
     }
