@@ -1,19 +1,20 @@
-#ifndef AUDIO_STREAM_PLAYER_H
+﻿#ifndef AUDIO_STREAM_PLAYER_H
 #define AUDIO_STREAM_PLAYER_H
 
 /**
  * @file audio_stream_player.h
- * @brief Base class for HTTP audio stream players (Music & Radio)
+ * @brief Base class for audio stream players (HTTP streams & SD card files).
  *
  * Provides common infrastructure:
- *   - HTTP streaming download (producer task)
- *   - Ring-buffer with back-pressure
- *   - Decoder lifecycle (esp_audio_codec: MP3/AAC)
+ *   - Data source task (HTTP or file -- override SourceDataLoop())
+ *   - Producer-consumer buffer in PSRAM
+ *   - Decoder lifecycle (esp_audio_codec: MP3/AAC/FLAC, plus WAV passthrough)
  *   - PCM output, mono down-mix, volume amplification
  *   - FFT display feeding
+ *   - Pause / resume support
  *   - FreeRTOS tasks pinned to specific cores
  *
- * Subclasses override hooks to customise behaviour per use-case.
+ * Subclasses override hooks to customize behaviour per use-case.
  */
 
 #include <string>
@@ -32,17 +33,23 @@ extern "C" {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Macros – eliminates magic numbers across the whole module          */
+/*  Macros -- eliminates magic numbers across the whole module         */
 /* ------------------------------------------------------------------ */
 
-/** Maximum audio buffer size (bytes) – limits PSRAM usage */
+/** Maximum audio buffer size (bytes) -- limits PSRAM usage */
 #define AUDIO_BUF_MAX_SIZE          (256 * 1024)
 
-/** Minimum buffered data before playback starts (bytes) */
+/** Minimum buffered data before playback starts -- HTTP streams */
 #define AUDIO_BUF_MIN_SIZE          (32 * 1024)
+
+/** Minimum buffered data before playback starts -- local file */
+#define AUDIO_FILE_BUF_MIN_SIZE     (8 * 1024)
 
 /** Per-chunk read size from HTTP stream (bytes) */
 #define AUDIO_HTTP_CHUNK_SIZE       4096
+
+/** Per-chunk read size from SD card file (bytes) */
+#define AUDIO_FILE_READ_CHUNK_SIZE  4096
 
 /** Decoder input buffer size (bytes) */
 #define AUDIO_DEC_INPUT_BUF_SIZE    8192
@@ -50,20 +57,20 @@ extern "C" {
 /** Default PCM output buffer (enough for 1 MP3 frame: 1152*2ch*2B) */
 #define AUDIO_PCM_OUT_BUF_SIZE      4608
 
-/** Stack size for the download task (bytes) */
-#define AUDIO_DOWNLOAD_TASK_STACK   (4 * 1024)
+/** Stack size for the source (download / file-read) task (bytes) */
+#define AUDIO_SOURCE_TASK_STACK     (8 * 1024)
 
 /** Stack size for the playback task (bytes) */
 #define AUDIO_PLAY_TASK_STACK       (6 * 1024)
 
-/** Download task priority */
-#define AUDIO_DOWNLOAD_TASK_PRIO    5
+/** Source task priority */
+#define AUDIO_SOURCE_TASK_PRIO      5
 
 /** Playback task priority */
 #define AUDIO_PLAY_TASK_PRIO        6
 
-/** Core for download task (PRO_CPU = 0, APP_CPU = 1) */
-#define AUDIO_DOWNLOAD_TASK_CORE    0
+/** Core for source task (PRO_CPU = 0, APP_CPU = 1) */
+#define AUDIO_SOURCE_TASK_CORE      0
 
 /** Core for playback task */
 #define AUDIO_PLAY_TASK_CORE        1
@@ -74,7 +81,7 @@ extern "C" {
 /** Default volume amplification factor */
 #define AUDIO_DEFAULT_VOLUME        1.0f
 
-/** Maximum reconnect attempts for streaming */
+/** Maximum reconnect attempts for HTTP streaming */
 #define AUDIO_MAX_RECONNECT         3
 
 /** Reconnect delay (ms) */
@@ -86,6 +93,9 @@ extern "C" {
 /** Delay after toggling chat state (ms) */
 #define AUDIO_CHAT_TOGGLE_DELAY_MS  300
 
+/** WAV PCM block size in samples (matching MP3 frame) */
+#define AUDIO_WAV_BLOCK_SAMPLES     (1152 * 2)
+
 /* ------------------------------------------------------------------ */
 /*  Decoder type enum                                                 */
 /* ------------------------------------------------------------------ */
@@ -93,7 +103,9 @@ extern "C" {
 enum class AudioDecoderType {
     MP3 = 0,
     AAC,
-    AUTO   ///< Auto-detect from stream header
+    FLAC,
+    WAV,    ///< Raw PCM passthrough (16-bit, no decoder needed)
+    AUTO    ///< Auto-detect from stream header
 };
 
 /* ------------------------------------------------------------------ */
@@ -109,7 +121,19 @@ struct StreamAudioChunk {
 };
 
 /* ------------------------------------------------------------------ */
-/*  AudioStreamPlayer – abstract base class                           */
+/*  WAV header info (for raw PCM passthrough)                         */
+/* ------------------------------------------------------------------ */
+
+struct WavHeaderInfo {
+    int    sample_rate     = 0;
+    int    channels        = 0;
+    int    bits_per_sample = 16;
+    size_t data_offset     = 0;
+    size_t data_size       = 0;
+};
+
+/* ------------------------------------------------------------------ */
+/*  AudioStreamPlayer -- base class                                   */
 /* ------------------------------------------------------------------ */
 
 class AudioStreamPlayer {
@@ -124,57 +148,97 @@ public:
     virtual ~AudioStreamPlayer();
 
     /* ---- Common public API ---- */
-    bool  StartStream(const std::string& url, AudioDecoderType type = AudioDecoderType::MP3);
+    bool  StartStream(const std::string& source,
+                      AudioDecoderType type = AudioDecoderType::MP3);
     bool  StopStream();
-    bool  IsPlaying()     const { return is_playing_.load(); }
-    bool  IsDownloading() const { return is_downloading_.load(); }
-    size_t GetBufferSize() const { return buffer_size_; }
-    int16_t* GetAudioData()     { return fft_pcm_ptr_; }
+
+    virtual bool IsPlaying() const     { return is_playing_.load(); }
+    bool  IsDownloading() const        { return is_source_active_.load(); }
+    bool  IsSourceActive() const       { return is_source_active_.load(); }
+    size_t GetBufferSize() const       { return buffer_size_; }
+    int16_t* GetAudioData()            { return fft_pcm_ptr_; }
+
+    /* ---- Pause / Resume ---- */
+    void  PauseStream();
+    void  ResumeStream();
+    bool  IsPaused() const { return is_paused_.load(); }
 
     void SetDisplayMode(DisplayMode mode);
     DisplayMode GetDisplayMode() const { return display_mode_.load(); }
 
     /** Set volume amplification (1.0 = 100%) */
-    void SetVolume(float factor) { volume_factor_ = factor; }
+    void  SetVolume(float factor) { volume_factor_ = factor; }
     float GetVolume() const       { return volume_factor_; }
 
 protected:
-    /* ---- Hooks for subclasses ---- */
+    /* ---- Hooks for subclasses (override as needed) ---- */
 
-    /** Called before download starts. Override to add custom HTTP headers. */
+    /**
+     * Data source loop. Override to provide custom data sources (e.g. file).
+     * Default implementation performs HTTP streaming with reconnect.
+     * Use PushToBuffer() to feed data into the playback pipeline.
+     * Check IsSourceActive() and IsPlaying() for stop requests.
+     * @param source  URL or file path passed to StartStream().
+     */
+    virtual void SourceDataLoop(const std::string& source);
+
+    /** Called before HTTP download starts. Override to add custom headers. */
     virtual void OnPrepareHttp(void* http_ptr) {}
 
-    /** Called once after the first frame is decoded (sample_rate/bits/channels known).
-     *  Override to display stream info on LCD. */
-    virtual void OnStreamInfoReady(int sample_rate, int bits_per_sample, int channels) {}
+    /** Called once after the first frame is decoded. */
+    virtual void OnStreamInfoReady(int sample_rate, int bits_per_sample,
+                                   int channels) {}
 
-    /** Called on each decoded PCM frame. Override for lyric sync, progress, etc. */
-    virtual void OnPcmFrame(int64_t play_time_ms, int sample_rate, int channels) {}
+    /** Called on each decoded PCM frame. */
+    virtual void OnPcmFrame(int64_t play_time_ms, int sample_rate,
+                            int channels) {}
 
     /** Called when playback finishes (naturally or stopped). */
     virtual void OnPlaybackFinished() {}
 
-    /** Called when display should show station/song info. Override to customise. */
+    /** Called once when FFT display canvas is ready. */
     virtual void OnDisplayReady() {}
 
-    /* ---- Utility for subclasses ---- */
+    /** Called when pause state changes. */
+    virtual void OnPauseStateChanged(bool paused) {}
+
+    /* ---- Protected utilities for subclasses ---- */
+
+    /** Push data into the playback buffer (copies to PSRAM). Thread-safe.
+     *  Returns false if stopped or allocation failed. */
+    bool PushToBuffer(const void* data, size_t size);
+
+    /** Get current playback time in milliseconds. */
     int64_t GetPlayTimeMs() const { return current_play_time_ms_; }
 
-    /** Access to the internal display mode for subclass logic */
+    /** Get decoder type for the current stream. */
+    AudioDecoderType GetDecoderType() const { return decoder_type_; }
+
+    /** Access to the display mode atomic. */
     std::atomic<DisplayMode>& DisplayModeRef() { return display_mode_; }
+
+    /** WAV header info -- set before StartStream with WAV type. */
+    WavHeaderInfo wav_info_;
 
 private:
     /* ---- FreeRTOS task wrappers ---- */
-    static void DownloadTaskEntry(void* param);
+    static void SourceTaskEntry(void* param);
     static void PlayTaskEntry(void* param);
 
-    void DownloadLoop(const std::string& url);
     void PlayLoop();
+    void PlayLoopCompressed();
+    void PlayLoopWav();
+
+    /* ---- PCM output helper (shared between compressed & WAV paths) ---- */
+    void OutputPcmFrame(int16_t* pcm_in, int total_samples, int channels,
+                        int sample_rate, int frame_duration_ms);
+
+    /* ---- Common playback helpers ---- */
+    bool HandlePauseAndDeviceState();
+    void StartFFTOnce();
 
     /* ---- Buffer helpers ---- */
     void ClearAudioBuffer();
-    bool WaitForBufferSpace();
-    bool WaitForBufferData();
 
     /* ---- Decoder helpers ---- */
     bool  InitDecoder(AudioDecoderType type);
@@ -186,19 +250,21 @@ private:
 
     /* ---- State ---- */
     std::atomic<bool> is_playing_;
-    std::atomic<bool> is_downloading_;
+    std::atomic<bool> is_source_active_;
+    std::atomic<bool> is_paused_;
     std::atomic<DisplayMode> display_mode_;
     float volume_factor_;
 
     /* ---- FreeRTOS handles ---- */
-    TaskHandle_t download_task_handle_;
+    TaskHandle_t source_task_handle_;
     TaskHandle_t play_task_handle_;
+    SemaphoreHandle_t pause_sem_;     ///< binary semaphore for pause/resume
 
     /* ---- Audio buffer (producer-consumer) ---- */
     std::queue<StreamAudioChunk> audio_buffer_;
     SemaphoreHandle_t            buffer_mutex_;
-    SemaphoreHandle_t            buffer_data_sem_;   ///< signalled when data is pushed
-    SemaphoreHandle_t            buffer_space_sem_;  ///< signalled when data is popped
+    SemaphoreHandle_t            buffer_data_sem_;
+    SemaphoreHandle_t            buffer_space_sem_;
     size_t                       buffer_size_;
 
     /* ---- Decoder (esp_audio_codec) ---- */
@@ -209,7 +275,7 @@ private:
     AudioDecoderType              decoder_type_;
     uint8_t*                      pcm_out_buffer_;
     size_t                        pcm_out_buffer_size_;
-    std::vector<uint8_t>          dec_out_vec_;   ///< resizeable output (AAC path)
+    std::vector<uint8_t>          dec_out_vec_;
 
     /* ---- Decoder input ---- */
     uint8_t* input_buffer_;
@@ -224,7 +290,7 @@ private:
     /* ---- FFT ---- */
     int16_t* fft_pcm_ptr_;
 
-    /* ---- URL for reconnect ---- */
+    /* ---- Source path / URL ---- */
     std::string stream_url_;
 };
 

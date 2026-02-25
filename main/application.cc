@@ -408,7 +408,7 @@ void Application::Start() {
     xTaskCreate([](void* arg) {
         ((Application*)arg)->MainEventLoop();
         vTaskDelete(NULL);
-    }, "main_event_loop", 1024 * 3 + 512, this, 3, &main_event_loop_task_handle_);
+    }, "main_event_loop", 1024 * 5, this, 3, &main_event_loop_task_handle_);
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);

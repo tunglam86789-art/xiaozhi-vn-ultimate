@@ -58,7 +58,7 @@
 #define BUILTIN_LED_GPIO        GPIO_NUM_42
 #define CHARGING_DETECTION_GPIO GPIO_NUM_NC
 
-#define SECONDS_TO_SLEEP_MODE   (60U * 5U)  // 5 minutes
+#define SECONDS_TO_SLEEP_MODE   (60U * 10U)  // 5 minutes
 #define SECONDS_TO_SHUTDOWN     (60U * 60U * 2U) // 2 hours
 
 // Screen display section
