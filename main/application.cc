@@ -13,6 +13,8 @@
 #include "wifi_station.h"
 #include "sd_card.h"
 #include "esp32_sd_music.h"
+#include "lcd_display.h"
+#include "features/video/video_player.h"
 #include <qrcode.h>
 #include <cmath>
 #include <cstring>
@@ -412,6 +414,82 @@ void Application::Start() {
         vTaskDelete(NULL);
     }, "main_event_loop", 1024 * 5, this, 3, &main_event_loop_task_handle_);
 
+
+#ifdef CONFIG_SD_CARD_ENABLE
+    auto sd_card = board.GetSdCard();
+    if (sd_card != nullptr) {
+        if (sd_card->Initialize() == ESP_OK) {
+            ESP_LOGI(TAG, "SD card mounted successfully");
+            sd_music_ = new Esp32SdMusic();
+            sd_music_->Initialize(sd_card);
+            sd_music_->loadTrackList();
+
+            // ================================================================
+            // VIDEO PLAYER TEST
+            // ----------------------------------------------------------------
+            // HOW TO USE:
+            //   1. Copy one or more AVI files to the SD card at:
+            //        /sdcard/videos/demo.avi
+            //   2. AVI must be MJPEG video + PCM audio (see video.md for
+            //      recommended FFmpeg command).
+            //   3. Set the block below to #if (1) to enable, (0) to disable.
+            // ================================================================
+#if (1)
+            {
+                // --- Get the raw LCD panel handle (bypasses LVGL for max FPS) ---
+                auto* lcd = dynamic_cast<LcdDisplay*>(display);
+                if (lcd != nullptr) {
+                    auto& vp = VideoPlayer::GetInstance();
+
+                    // Initialize: pass LCD panel handle, resolution, codec, SD card
+                    bool ok = vp.Initialize(
+                        lcd->GetPanelHandle(),
+                        static_cast<uint16_t>(lcd->width()),
+                        static_cast<uint16_t>(lcd->height()),
+                        codec,
+                        sd_card
+                    );
+
+                    if (ok) {
+                        // Auto-play next video when one ends
+                        vp.SetEndCallback([](const std::string& /*finished_path*/) {
+                            auto& vp = VideoPlayer::GetInstance();
+                            if (!vp.GetPlaylist().empty()) {
+                                vp.Next(); // Loop through all videos in directory
+                            }
+                        });
+
+                        // Scan /sdcard/videos/ for .avi files
+                        size_t found = vp.ScanDirectory();
+                        ESP_LOGI(TAG, "[VideoTest] Found %zu AVI file(s) in /sdcard/videos/", found);
+
+                        if (found > 0) {
+                            // Play the first video immediately
+                            const auto& first = vp.GetPlaylist()[0];
+                            ESP_LOGI(TAG, "[VideoTest] Playing: %s", first.path.c_str());
+                            vp.Play(first.path);
+                        } else {
+                            ESP_LOGW(TAG, "[VideoTest] No AVI files found."
+                                         " Put .avi files in /sdcard/videos/ to test.");
+                        }
+                    } else {
+                        ESP_LOGE(TAG, "[VideoTest] VideoPlayer::Initialize() failed.");
+                    }
+                } else {
+                    ESP_LOGW(TAG, "[VideoTest] Display is not an LcdDisplay, skipping.");
+                }
+
+                vTaskDelay(pdMS_TO_TICKS(1000000)); // Let the video play for a while before continuing with the rest of the app
+            }
+#endif // VIDEO PLAYER TEST
+            // ================================================================
+
+        } else {
+            ESP_LOGW(TAG, "Failed to mount SD card");
+        }
+    }
+#endif
+
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
 
@@ -428,20 +506,6 @@ void Application::Start() {
     if (radio_ != nullptr) {
         radio_->Initialize();
     }
-
-#ifdef CONFIG_SD_CARD_ENABLE
-    auto sd_card = board.GetSdCard();
-    if (sd_card != nullptr) {
-        if (sd_card->Initialize() == ESP_OK) {
-            ESP_LOGI(TAG, "SD card mounted successfully");
-            sd_music_ = new Esp32SdMusic();
-            sd_music_->Initialize(sd_card);
-            sd_music_->loadTrackList();
-        } else {
-            ESP_LOGW(TAG, "Failed to mount SD card");
-        }
-    }
-#endif
 
     // Update the status bar immediately to show the network state
     display->UpdateStatusBar(true);

@@ -135,6 +135,9 @@ public:
 
     // Rotate lcd display
     virtual bool SetRotation(int rotation_degree, bool save_setting) override;
+
+    /** Get the raw LCD panel handle (for direct drawing, e.g. video player) */
+    esp_lcd_panel_handle_t GetPanelHandle() const { return panel_; }
     
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     virtual void ShowIdleCard(const IdleCardInfo& info) override;
