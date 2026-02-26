@@ -414,6 +414,22 @@ void Application::Start() {
         vTaskDelete(NULL);
     }, "main_event_loop", 1024 * 5, this, 3, &main_event_loop_task_handle_);
 
+    /* Start the clock timer to update the status bar */
+    esp_timer_start_periodic(clock_timer_handle_, 1000000);
+
+    /* Wait for the network to be ready */
+    board.StartNetwork();
+
+    music_ = new Esp32Music();
+    if (music_ != nullptr) {
+        music_->Initialize();
+        // music_->Download("Con Mua Bang Gia", "Bang Kieu");
+    }
+
+    radio_ = new Esp32Radio();
+    if (radio_ != nullptr) {
+        radio_->Initialize();
+    }
 
 #ifdef CONFIG_SD_CARD_ENABLE
     auto sd_card = board.GetSdCard();
@@ -447,10 +463,16 @@ void Application::Start() {
                         static_cast<uint16_t>(lcd->width()),
                         static_cast<uint16_t>(lcd->height()),
                         codec,
-                        sd_card
+                        sd_card,
+                        display   // Pass Display* for LVGL canvas support
                     );
 
                     if (ok) {
+                        // Choose render mode for testing:
+                        //   VideoRenderMode::DirectLcd  — bypass LVGL, max FPS (default)
+                        //   VideoRenderMode::LvglCanvas — through LVGL canvas pipeline
+                        vp.SetRenderMode(VideoRenderMode::LvglCanvas);
+
                         // Auto-play next video when one ends
                         vp.SetEndCallback([](const std::string& /*finished_path*/) {
                             auto& vp = VideoPlayer::GetInstance();
@@ -489,23 +511,6 @@ void Application::Start() {
         }
     }
 #endif
-
-    /* Start the clock timer to update the status bar */
-    esp_timer_start_periodic(clock_timer_handle_, 1000000);
-
-    /* Wait for the network to be ready */
-    board.StartNetwork();
-
-    music_ = new Esp32Music();
-    if (music_ != nullptr) {
-        music_->Initialize();
-        // music_->Download("Con Mua Bang Gia", "Bang Kieu");
-    }
-
-    radio_ = new Esp32Radio();
-    if (radio_ != nullptr) {
-        radio_->Initialize();
-    }
 
     // Update the status bar immediately to show the network state
     display->UpdateStatusBar(true);

@@ -29,6 +29,7 @@
 #include "audio_codec.h"
 #include "sd_card.h"
 #include "board.h"
+#include "display.h"
 
 static const char* TAG = "VideoPlayer";
 
@@ -55,7 +56,8 @@ VideoPlayer::~VideoPlayer() {
 
 bool VideoPlayer::Initialize(esp_lcd_panel_handle_t lcd_panel,
                              uint16_t lcd_width, uint16_t lcd_height,
-                             AudioCodec* codec, SdCard* sd_card) {
+                             AudioCodec* codec, SdCard* sd_card,
+                             Display* display) {
     if (initialized_.load()) {
         ESP_LOGW(TAG, "Already initialized");
         return true;
@@ -75,6 +77,7 @@ bool VideoPlayer::Initialize(esp_lcd_panel_handle_t lcd_panel,
 
     /* Store mount point for path construction */
     mount_point_ = sd_card_->GetMountPoint();
+    display_ = display;
 
     /* ---- Allocate double-buffered RGB565 frame memory in PSRAM ---- */
     frame_buf_size_ = VIDEO_MAX_WIDTH * VIDEO_MAX_HEIGHT * sizeof(uint16_t);
@@ -92,9 +95,21 @@ bool VideoPlayer::Initialize(esp_lcd_panel_handle_t lcd_panel,
     }
     ESP_LOGI(TAG, "Frame buffers allocated: 2 x %zu bytes in PSRAM", frame_buf_size_);
 
+    /* ---- Allocate MJPEG pending buffers for render task handoff ---- */
+    pending_mjpeg_buf_ = static_cast<uint8_t*>(
+        heap_caps_malloc(VIDEO_AVI_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    decode_mjpeg_buf_ = static_cast<uint8_t*>(
+        heap_caps_malloc(VIDEO_AVI_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!pending_mjpeg_buf_ || !decode_mjpeg_buf_) {
+        ESP_LOGE(TAG, "Failed to allocate MJPEG buffers (%d bytes each)", VIDEO_AVI_BUFFER_SIZE);
+        Deinitialize();
+        return false;
+    }
+    ESP_LOGI(TAG, "MJPEG buffers allocated: 2 x %d bytes in PSRAM", VIDEO_AVI_BUFFER_SIZE);
+
     /* ---- Initialize JPEG decoder (software, MJPEG → RGB565) ---- */
     jpeg_dec_config_t jpeg_cfg = {
-        .output_type  = JPEG_PIXEL_FORMAT_RGB565_BE,
+        .output_type  = JPEG_PIXEL_FORMAT_RGB565_LE,
         .scale        = {.width = 0, .height = 0},
         .clipper      = {.width = 0, .height = 0},
         .rotate       = JPEG_ROTATE_0D,
@@ -121,6 +136,31 @@ bool VideoPlayer::Initialize(esp_lcd_panel_handle_t lcd_panel,
         return false;
     }
 
+    /* ---- Create synchronization primitives for render task ---- */
+    render_sem_ = xSemaphoreCreateBinary();
+    mjpeg_mutex_ = xSemaphoreCreateMutex();
+    if (!render_sem_ || !mjpeg_mutex_) {
+        ESP_LOGE(TAG, "Failed to create render sync primitives");
+        Deinitialize();
+        return false;
+    }
+
+    /* ---- Start the independent render task ---- */
+    render_exit_.store(false);
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        RenderTaskEntry, "vid_render",
+        VIDEO_RENDER_TASK_STACK, this,
+        VIDEO_RENDER_TASK_PRIORITY,
+        &render_task_handle_,
+        VIDEO_RENDER_TASK_CORE);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create render task");
+        Deinitialize();
+        return false;
+    }
+    ESP_LOGI(TAG, "Render task created: core=%d prio=%d stack=%d",
+             VIDEO_RENDER_TASK_CORE, VIDEO_RENDER_TASK_PRIORITY, VIDEO_RENDER_TASK_STACK);
+
     initialized_.store(true);
     SetState(VideoPlayerState::Idle);
     ESP_LOGI(TAG, "Initialized: LCD %dx%d, max video %dx%d",
@@ -131,6 +171,48 @@ bool VideoPlayer::Initialize(esp_lcd_panel_handle_t lcd_panel,
 
 void VideoPlayer::Deinitialize() {
     Stop();
+
+    /* Stop render task */
+    if (render_task_handle_) {
+        render_exit_.store(true);
+        if (render_sem_) {
+            xSemaphoreGive(render_sem_);  /* Wake task so it can exit */
+        }
+        /* Wait for task to finish (max 2 seconds) */
+        int timeout = 100;
+        while (render_task_running_.load() && --timeout > 0) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        if (timeout <= 0) {
+            ESP_LOGW(TAG, "Render task did not exit in time, force deleting");
+            vTaskDelete(render_task_handle_);
+        }
+        render_task_handle_ = nullptr;
+        render_exit_.store(false);
+    }
+
+    /* Destroy LVGL canvas */
+    DestroyVideoCanvas();
+
+    /* Free render sync primitives */
+    if (render_sem_) {
+        vSemaphoreDelete(render_sem_);
+        render_sem_ = nullptr;
+    }
+    if (mjpeg_mutex_) {
+        vSemaphoreDelete(mjpeg_mutex_);
+        mjpeg_mutex_ = nullptr;
+    }
+
+    /* Free MJPEG buffers */
+    if (pending_mjpeg_buf_) {
+        heap_caps_free(pending_mjpeg_buf_);
+        pending_mjpeg_buf_ = nullptr;
+    }
+    if (decode_mjpeg_buf_) {
+        heap_caps_free(decode_mjpeg_buf_);
+        decode_mjpeg_buf_ = nullptr;
+    }
 
     /* Free JPEG decoder */
     if (jpeg_dec_) {
@@ -183,6 +265,13 @@ bool VideoPlayer::Play(const std::string& file_path) {
     {
         std::lock_guard<std::mutex> lock(stats_mutex_);
         stats_ = VideoPlaybackStats{};
+    }
+
+    /* Reset render state for new file */
+    pending_mjpeg_size_ = 0;
+    back_buf_index_ = 0;
+    if (render_sem_) {
+        xSemaphoreTake(render_sem_, 0);  /* Drain stale signal */
     }
 
     /* ---- Initialize AVI player ---- */
@@ -409,45 +498,31 @@ void VideoPlayer::HandleVideoFrame(frame_data_t* data) {
     if (paused_.load()) return;
     if (!data || data->type != FRAME_TYPE_VIDEO) return;
 
-    int64_t decode_start = esp_timer_get_time();
-
-    uint16_t vw = data->video_info.width;
-    uint16_t vh = data->video_info.height;
-
-    /* Decode MJPEG → RGB565 into back-buffer */
-    bool decoded = false;
-    if (data->video_info.frame_format == FORMAT_MJEPG) {
-        decoded = DecodeMjpegFrame(data->data, data->data_bytes, vw, vh);
-    } else {
+    if (data->video_info.frame_format != FORMAT_MJEPG) {
         ESP_LOGW(TAG, "Unsupported video format: %d", data->video_info.frame_format);
+        return;
     }
 
-    if (decoded) {
-        /* Hook for subclass customization */
-        OnVideoFrameReady(frame_buf_[back_buf_index_], vw, vh);
-
-        /* Draw the decoded frame to LCD */
-        DrawFrameToLcd(vw, vh);
-
-        /* Swap back-buffer index for next frame */
-        back_buf_index_ = 1 - back_buf_index_;
-
-        /* Update stats */
-        int64_t decode_end = esp_timer_get_time();
-        float decode_ms = static_cast<float>(decode_end - decode_start) / 1000.0f;
-        {
-            std::lock_guard<std::mutex> lock(stats_mutex_);
-            stats_.frames_decoded++;
-            stats_.video_width  = vw;
-            stats_.video_height = vh;
-            /* Running average of decode time */
-            float n = static_cast<float>(stats_.frames_decoded);
-            stats_.avg_decode_ms = stats_.avg_decode_ms * ((n - 1.0f) / n) + decode_ms / n;
-        }
-    } else {
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        stats_.frames_dropped++;
+    /*
+     * Copy raw MJPEG data to the pending buffer and signal the render task.
+     * The actual JPEG decode + LCD/canvas draw happens in the independent
+     * render task, so the AVI demuxer is NOT blocked by decode or draw latency.
+     */
+    size_t copy_size = data->data_bytes;
+    if (copy_size > VIDEO_AVI_BUFFER_SIZE) {
+        ESP_LOGW(TAG, "MJPEG frame too large: %zu > %d", copy_size, VIDEO_AVI_BUFFER_SIZE);
+        copy_size = VIDEO_AVI_BUFFER_SIZE;
     }
+
+    xSemaphoreTake(mjpeg_mutex_, portMAX_DELAY);
+    memcpy(pending_mjpeg_buf_, data->data, copy_size);
+    pending_mjpeg_size_ = copy_size;
+    pending_frame_w_ = data->video_info.width;
+    pending_frame_h_ = data->video_info.height;
+    xSemaphoreGive(mjpeg_mutex_);
+
+    /* Wake the render task */
+    xSemaphoreGive(render_sem_);
 }
 
 void VideoPlayer::HandleAudioFrame(frame_data_t* data) {
@@ -606,6 +681,214 @@ void VideoPlayer::DrawFrameToLcd(uint16_t vw, uint16_t vh) {
             stats_.avg_draw_ms = stats_.avg_draw_ms * ((n - 1.0f) / n) + draw_ms / n;
         }
     }
+}
+
+/* ================================================================== */
+/*  LVGL canvas rendering (goes through LVGL refresh pipeline)        */
+/* ================================================================== */
+
+void VideoPlayer::CreateVideoCanvas() {
+    if (!display_) {
+        ESP_LOGW(TAG, "Cannot create canvas: no Display* provided");
+        return;
+    }
+
+    /* Destroy any existing canvas first */
+    DestroyVideoCanvas();
+
+    /* Allocate canvas buffer in PSRAM (full LCD size, RGB565) */
+    size_t buf_size = static_cast<size_t>(lcd_width_) * lcd_height_ * sizeof(uint16_t);
+    canvas_buf_ = static_cast<uint16_t*>(
+        heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!canvas_buf_) {
+        ESP_LOGE(TAG, "Failed to allocate canvas buffer (%zu bytes)", buf_size);
+        return;
+    }
+    memset(canvas_buf_, 0, buf_size);
+
+    /* Create LVGL canvas (must hold display lock for LVGL calls) */
+    {
+        DisplayLockGuard lock(display_);
+        lv_obj_t* canvas = lv_canvas_create(lv_scr_act());
+        lv_canvas_set_buffer(canvas, canvas_buf_, lcd_width_, lcd_height_,
+                             LV_COLOR_FORMAT_RGB565);
+        lv_obj_set_pos(canvas, 0, 0);
+        lv_obj_set_size(canvas, lcd_width_, lcd_height_);
+        lv_canvas_fill_bg(canvas, lv_color_black(), LV_OPA_COVER);
+        lv_obj_move_foreground(canvas);
+        video_canvas_ = canvas;
+    }
+
+    ESP_LOGI(TAG, "Video canvas created: %dx%d (%zu bytes)",
+             lcd_width_, lcd_height_, buf_size);
+}
+
+void VideoPlayer::DestroyVideoCanvas() {
+    if (video_canvas_ && display_) {
+        DisplayLockGuard lock(display_);
+        lv_obj_del(static_cast<lv_obj_t*>(video_canvas_));
+        video_canvas_ = nullptr;
+    }
+    if (canvas_buf_) {
+        heap_caps_free(canvas_buf_);
+        canvas_buf_ = nullptr;
+    }
+}
+
+void VideoPlayer::DrawFrameToCanvas(uint16_t vw, uint16_t vh) {
+    if (!display_ || !video_canvas_ || !canvas_buf_) return;
+
+    lv_obj_t* canvas = static_cast<lv_obj_t*>(video_canvas_);
+    uint16_t* src = frame_buf_[back_buf_index_];
+
+    /* Determine draw area (center video if smaller than LCD) */
+    uint16_t draw_w = std::min(vw, lcd_width_);
+    uint16_t draw_h = std::min(vh, lcd_height_);
+    int x_offset = (lcd_width_  - draw_w) / 2;
+    int y_offset = (lcd_height_ - draw_h) / 2;
+
+    int64_t draw_start = esp_timer_get_time();
+
+    /*
+     * Copy decoded RGB565 frame data into the LVGL canvas buffer.
+     * If the video exactly matches LCD size, use a single fast memcpy.
+     * Otherwise, center the frame and clear the border regions.
+     */
+    if (x_offset == 0 && draw_w == lcd_width_ &&
+        y_offset == 0 && draw_h == lcd_height_) {
+        memcpy(canvas_buf_, src, draw_w * draw_h * sizeof(uint16_t));
+    } else {
+        /* Clear entire canvas to black */
+        memset(canvas_buf_, 0,
+               static_cast<size_t>(lcd_width_) * lcd_height_ * sizeof(uint16_t));
+        /* Copy video rows with offset */
+        for (uint16_t row = 0; row < draw_h; row++) {
+            uint16_t* dst_row = canvas_buf_ + (y_offset + row) * lcd_width_ + x_offset;
+            uint16_t* src_row = src + row * vw;
+            memcpy(dst_row, src_row, draw_w * sizeof(uint16_t));
+        }
+    }
+
+    /* Invalidate canvas so LVGL redraws it on next refresh cycle */
+    {
+        DisplayLockGuard lock(display_);
+        lv_obj_invalidate(canvas);
+    }
+
+    int64_t draw_end = esp_timer_get_time();
+    float draw_ms = static_cast<float>(draw_end - draw_start) / 1000.0f;
+
+    /* Update draw time in stats */
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        float n = static_cast<float>(stats_.frames_decoded);
+        if (n > 0) {
+            stats_.avg_draw_ms = stats_.avg_draw_ms * ((n - 1.0f) / n) + draw_ms / n;
+        }
+    }
+}
+
+/* ================================================================== */
+/*  Render mode switching                                             */
+/* ================================================================== */
+
+void VideoPlayer::SetRenderMode(VideoRenderMode mode) {
+    if (mode == render_mode_) return;
+
+    VideoRenderMode old_mode = render_mode_;
+    render_mode_ = mode;
+
+    if (mode == VideoRenderMode::LvglCanvas) {
+        CreateVideoCanvas();
+    } else if (old_mode == VideoRenderMode::LvglCanvas) {
+        DestroyVideoCanvas();
+    }
+
+    ESP_LOGI(TAG, "Render mode: %s -> %s",
+             old_mode == VideoRenderMode::DirectLcd ? "DirectLcd" : "LvglCanvas",
+             mode == VideoRenderMode::DirectLcd ? "DirectLcd" : "LvglCanvas");
+}
+
+/* ================================================================== */
+/*  Render task (independent from AVI demuxer task)                   */
+/* ================================================================== */
+
+void VideoPlayer::RenderTaskEntry(void* arg) {
+    auto* self = static_cast<VideoPlayer*>(arg);
+    self->RenderTaskLoop();
+}
+
+void VideoPlayer::RenderTaskLoop() {
+    ESP_LOGI(TAG, "Render task started on core %d", xPortGetCoreID());
+    render_task_running_.store(true);
+
+    while (true) {
+        /* Wait for a new frame signal (or timeout to check exit flag) */
+        if (xSemaphoreTake(render_sem_, pdMS_TO_TICKS(100)) != pdTRUE) {
+            if (render_exit_.load()) break;
+            continue;
+        }
+
+        if (render_exit_.load()) break;
+        if (stop_requested_.load() || paused_.load()) continue;
+
+        int64_t decode_start = esp_timer_get_time();
+
+        /* Atomically copy pending MJPEG data to local decode buffer.
+         * The mutex is held only during the fast memcpy, so the AVI
+         * callback is blocked at most ~1 ms (not during decode/draw). */
+        size_t mjpeg_size;
+        uint16_t vw, vh;
+
+        xSemaphoreTake(mjpeg_mutex_, portMAX_DELAY);
+        mjpeg_size = pending_mjpeg_size_;
+        vw = pending_frame_w_;
+        vh = pending_frame_h_;
+        if (mjpeg_size > 0 && mjpeg_size <= VIDEO_AVI_BUFFER_SIZE) {
+            memcpy(decode_mjpeg_buf_, pending_mjpeg_buf_, mjpeg_size);
+        }
+        xSemaphoreGive(mjpeg_mutex_);
+
+        if (mjpeg_size == 0) continue;
+
+        /* Decode MJPEG -> RGB565 into the back-buffer */
+        bool decoded = DecodeMjpegFrame(decode_mjpeg_buf_, mjpeg_size, vw, vh);
+
+        if (decoded) {
+            /* Hook for subclass customization */
+            OnVideoFrameReady(frame_buf_[back_buf_index_], vw, vh);
+
+            /* Render based on current mode */
+            if (render_mode_ == VideoRenderMode::LvglCanvas) {
+                DrawFrameToCanvas(vw, vh);
+            } else {
+                DrawFrameToLcd(vw, vh);
+            }
+
+            /* Swap back-buffer for next frame */
+            back_buf_index_ = 1 - back_buf_index_;
+
+            /* Update statistics */
+            int64_t decode_end = esp_timer_get_time();
+            float decode_ms = static_cast<float>(decode_end - decode_start) / 1000.0f;
+            {
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                stats_.frames_decoded++;
+                stats_.video_width  = vw;
+                stats_.video_height = vh;
+                float n = static_cast<float>(stats_.frames_decoded);
+                stats_.avg_decode_ms = stats_.avg_decode_ms * ((n - 1.0f) / n)
+                                     + decode_ms / n;
+            }
+        } else {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.frames_dropped++;
+        }
+    }
+
+    render_task_running_.store(false);
+    ESP_LOGI(TAG, "Render task exiting");
+    vTaskDelete(NULL);
 }
 
 /* ================================================================== */

@@ -82,6 +82,15 @@ class Display;
 /** Maximum number of files in a single directory scan */
 #define VIDEO_MAX_FILES             256
 
+/** Render task stack size (bytes) — runs JPEG decode + LCD/canvas draw */
+#define VIDEO_RENDER_TASK_STACK     (8 * 1024)
+
+/** Render task priority (slightly lower than AVI demuxer for backpressure) */
+#define VIDEO_RENDER_TASK_PRIORITY  5
+
+/** Render task pinned core (core 0 = separate from AVI demuxer on core 1) */
+#define VIDEO_RENDER_TASK_CORE      0
+
 /* ------------------------------------------------------------------ */
 /*  State machine                                                     */
 /* ------------------------------------------------------------------ */
@@ -124,6 +133,23 @@ struct VideoPlaybackStats {
 };
 
 /* ------------------------------------------------------------------ */
+/*  Rendering mode                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Video rendering strategy.
+ *
+ * DirectLcd:  esp_lcd_panel_draw_bitmap() — bypasses LVGL, maximum FPS.
+ * LvglCanvas: Renders through an LVGL canvas widget — goes through
+ *             LVGL's refresh pipeline.  Useful for testing LVGL overhead
+ *             and for overlaying UI elements on top of video.
+ */
+enum class VideoRenderMode {
+    DirectLcd,    ///< Direct LCD panel write (bypasses LVGL)
+    LvglCanvas    ///< LVGL canvas rendering pipeline
+};
+
+/* ------------------------------------------------------------------ */
 /*  Callback typedefs for event notification                          */
 /* ------------------------------------------------------------------ */
 
@@ -160,7 +186,8 @@ public:
      */
     bool Initialize(esp_lcd_panel_handle_t lcd_panel,
                     uint16_t lcd_width, uint16_t lcd_height,
-                    AudioCodec* codec, SdCard* sd_card);
+                    AudioCodec* codec, SdCard* sd_card,
+                    Display* display = nullptr);
 
     /**
      * @brief Release all resources. Safe to call multiple times.
@@ -250,6 +277,12 @@ public:
     void SetStateCallback(VideoStateCallback cb) { state_callback_ = std::move(cb); }
     void SetEndCallback(VideoEndCallback cb) { end_callback_ = std::move(cb); }
 
+    /* ---- Render mode ---- */
+
+    /** Set rendering mode (DirectLcd or LvglCanvas). Call before Play(). */
+    void SetRenderMode(VideoRenderMode mode);
+    VideoRenderMode GetRenderMode() const { return render_mode_; }
+
     /* ---- Volume ---- */
 
     /** Set video audio volume (0.0 = mute, 1.0 = normal, >1.0 = amplify) */
@@ -313,6 +346,17 @@ private:
     /** Draw the current back-buffer to LCD panel */
     void DrawFrameToLcd(uint16_t width, uint16_t height);
 
+    /** Draw the decoded frame via LVGL canvas (for render mode comparison) */
+    void DrawFrameToCanvas(uint16_t width, uint16_t height);
+
+    /** Create / destroy the LVGL canvas used in LvglCanvas render mode */
+    void CreateVideoCanvas();
+    void DestroyVideoCanvas();
+
+    /* ---- Render task (decouples decode+draw from AVI demuxer) ---- */
+    static void RenderTaskEntry(void* arg);
+    void RenderTaskLoop();
+
     /** Output PCM audio through AudioCodec */
     void OutputAudioPcm(const uint8_t* pcm_data, size_t data_bytes,
                         uint8_t channels, uint8_t bits_per_sample);
@@ -342,6 +386,24 @@ private:
     uint16_t* frame_buf_[2]    = {nullptr, nullptr};
     int       back_buf_index_  = 0;   ///< Index of buffer currently being decoded into
     size_t    frame_buf_size_  = 0;   ///< Size of each buffer in bytes
+
+    /* ---- Render task (independent from AVI demuxer task) ---- */
+    TaskHandle_t      render_task_handle_  = nullptr;
+    SemaphoreHandle_t render_sem_          = nullptr;  ///< Signals new frame ready
+    SemaphoreHandle_t mjpeg_mutex_         = nullptr;  ///< Protects pending MJPEG buffer
+    uint8_t*          pending_mjpeg_buf_   = nullptr;  ///< AVI cb writes MJPEG here
+    uint8_t*          decode_mjpeg_buf_    = nullptr;  ///< Render task's private copy
+    size_t            pending_mjpeg_size_  = 0;
+    uint16_t          pending_frame_w_     = 0;
+    uint16_t          pending_frame_h_     = 0;
+    std::atomic<bool> render_task_running_{false};
+    std::atomic<bool> render_exit_{false};             ///< Signals render task to exit
+
+    /* ---- LVGL canvas rendering ---- */
+    Display*          display_       = nullptr;  ///< For LVGL lock (canvas mode)
+    void*             video_canvas_  = nullptr;  ///< lv_obj_t* (avoids lvgl.h dep)
+    uint16_t*         canvas_buf_    = nullptr;  ///< PSRAM buffer for LVGL canvas
+    VideoRenderMode   render_mode_   = VideoRenderMode::DirectLcd;
 
     /* ---- State ---- */
     std::atomic<VideoPlayerState> state_{VideoPlayerState::Idle};
