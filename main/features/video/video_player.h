@@ -165,6 +165,8 @@ using VideoStateCallback = std::function<void(VideoPlayerState old_state, VideoP
 /** Called when a video file finishes playing (natural end or error) */
 using VideoEndCallback = std::function<void(const std::string& file_path)>;
 
+using VideoClockSyncCallback = std::function<void(uint32_t rate, uint8_t bits, uint8_t channels)>;
+
 /** Called when FPS stats are available (periodic report) */
 using VideoFpsCallback = std::function<void(float fps, float avg_decode_ms, float avg_draw_ms)>;
 
@@ -291,6 +293,7 @@ public:
 
     void SetStateCallback(VideoStateCallback cb) { state_callback_ = std::move(cb); }
     void SetEndCallback(VideoEndCallback cb) { end_callback_ = std::move(cb); }
+    void SetClockSyncCallback(VideoClockSyncCallback cb) { clock_sync_callback_ = std::move(cb); }
     void SetFpsCallback(VideoFpsCallback cb) { fps_callback_ = std::move(cb); }
     void SetFrameCallback(VideoFrameCallback cb) { frame_callback_ = std::move(cb); }
     void SetAudioCallback(VideoAudioCallback cb) { audio_callback_ = std::move(cb); }
@@ -468,6 +471,7 @@ private:
     VideoFpsCallback              fps_callback_;
     VideoFrameCallback            frame_callback_;
     VideoAudioCallback            audio_callback_;
+    VideoClockSyncCallback        clock_sync_callback_;
 
     /* ---- FPS tracking ---- */
     int64_t                       fps_last_log_time_us_ = 0;

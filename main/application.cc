@@ -1435,15 +1435,13 @@ bool Application::InitVideo() {
             codec,
             sd_card,
             display,   // Pass Display* for LVGL canvas support
+            // Choose render mode for testing:
+            //   VideoRenderMode::DirectLcd  — bypass LVGL, max FPS (default not stable)
+            //   VideoRenderMode::LvglCanvas — through LVGL canvas pipeline
             VideoRenderMode::LvglCanvas
         );
 
         if (ok) {
-            // Choose render mode for testing:
-            //   VideoRenderMode::DirectLcd  — bypass LVGL, max FPS (default)
-            //   VideoRenderMode::LvglCanvas — through LVGL canvas pipeline
-            sd_video_->SetRenderMode(VideoRenderMode::LvglCanvas);
-
             // Scan /sdcard/videos/ for .avi files and build playlist
             size_t found = sd_video_->ScanDirectory();
             ESP_LOGI(TAG, "InitVideo: found %d video files on SD card", found);
@@ -1457,9 +1455,6 @@ bool Application::InitVideo() {
                 if (!display) return;
 
                 if (new_state == VideoPlayerState::Playing) {
-                    // When playback starts, ensure device is idle and ready for media
-                    Application::GetInstance().EnsureIdleForMedia();
-
                     // Activate media overlay to hide main UI (emoji/chat/idle card)
                     display->SetMediaOverlayActive(true);
                     ESP_LOGI(TAG, "Video playing: main UI hidden via media overlay");
@@ -1469,6 +1464,14 @@ bool Application::InitVideo() {
                     display->SetMediaOverlayActive(false);
                     ESP_LOGI(TAG, "Video stopped: main UI restored via media overlay");
                 }
+            });
+
+            sd_video_->SetClockSyncCallback([](uint32_t rate, uint8_t bits, uint8_t channels) {
+                // This callback is called in the video decoding thread right before starting playback, so we need to be careful about performance.
+                // so it's a good place to ensure the device is idle and ready for media without blocking the main thread.
+                // When playback starts, ensure device is idle and ready for media
+                ESP_LOGI(TAG, "Video clock sync callback: ensuring idle for media");
+                Application::GetInstance().EnsureIdleForMedia();
             });
 
             sd_video_->SetAudioCallback([this](int16_t* pcm, size_t samples, int channels) {

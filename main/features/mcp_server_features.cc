@@ -226,12 +226,6 @@ void McpFeatureTools::RegisterSdVideoTools(VideoPlayer* video) {
             }
 
             ESP_LOGI(TAG, "[SdVideo] Setting mode: %s", action.c_str());
-            // Pick a random video from the playlist
-            auto& playlist = video->GetPlaylist();
-            int random_idx = rand() % playlist.size();
-            video->Play(playlist[random_idx].path);
-            return "{\"success\": true, \"message\": \"Shuffle: playing random video\"}";
-
             if (action == "shuffle" || action == "repeat") {
                 if (action == "shuffle") {
                     // Pick a random video from the playlist

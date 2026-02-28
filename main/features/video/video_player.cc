@@ -301,7 +301,7 @@ bool VideoPlayer::Play(const std::string& file_path) {
     }
 
     SetState(VideoPlayerState::Playing);
-    ESP_LOGI(TAG, "Playing: %s", file_path.c_str());
+    ESP_LOGI(TAG, "Playing: %s", current_file_path_.c_str());
     return true;
 }
 
@@ -549,6 +549,13 @@ void VideoPlayer::HandleAudioClock(uint32_t rate, uint32_t bits, uint32_t ch) {
     ESP_LOGI(TAG, "Audio clock: rate=%lu bits=%lu ch=%lu", rate, bits, ch);
 
     if (audio_codec_) {
+        /* Notify external clock sync callback for user application to enter idle mode */
+        if (clock_sync_callback_) {
+            clock_sync_callback_(rate, static_cast<uint8_t>(bits), static_cast<uint8_t>(ch));
+        }
+
+        // Should be called after the clock sync callback to ensure audio output is enabled
+        // and set the sample rate for synchronization.
         if (!audio_codec_->output_enabled()) {
             ESP_LOGI(TAG, "Enabling audio output");
             audio_codec_->EnableOutput(true);
