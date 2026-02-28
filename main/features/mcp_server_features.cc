@@ -206,13 +206,10 @@ void McpFeatureTools::RegisterSdVideoTools(VideoPlayer* video) {
 
     auto& mcp = McpServer::GetInstance();
     mcp.AddTool("self.sdvideo.play_video",
-        "Play a video file from SD.\n"
+        "Play a video file from SD card. Use this tool when user requests to play a video file stored on SD card.\n"
         "Args:\n"
-        "  `video_name`: The name or keyword of the video file to play.\n"
-        "  `action`: The action to perform (shuffle | repeat | only).\n"
-        "For only: `video_name` (string)\n"
-        "For shuffle: `enabled` (bool)\n"
-        "For repeat: `mode` = none | one | all\n"
+        "  `video_name`: The name of the video file to play (e.g., 'demo.avi'). You can also specify part of the name.\n"
+        "  `action`: Optional. If specified as 'shuffle', a random video from the playlist will be played. If specified as 'repeat', videos will play in a loop.\n"
         "Return:\n"
         "  Playback status information.",
         PropertyList({
@@ -224,8 +221,16 @@ void McpFeatureTools::RegisterSdVideoTools(VideoPlayer* video) {
             std::string action = properties["action"].value<std::string>();
 
             if (video->GetPlaylist().empty()) {
+                ESP_LOGI(TAG, "[SdVideo] Scanning SD card for video files...");
                 return "{\"success\": false, \"message\": \"No video files found on SD card\"}";
             }
+
+            ESP_LOGI(TAG, "[SdVideo] Setting mode: %s", action.c_str());
+            // Pick a random video from the playlist
+            auto& playlist = video->GetPlaylist();
+            int random_idx = rand() % playlist.size();
+            video->Play(playlist[random_idx].path);
+            return "{\"success\": true, \"message\": \"Shuffle: playing random video\"}";
 
             if (action == "shuffle" || action == "repeat") {
                 if (action == "shuffle") {
@@ -241,9 +246,9 @@ void McpFeatureTools::RegisterSdVideoTools(VideoPlayer* video) {
                             video->Next(); // Loop through all videos in directory
                         }
                     });
+                    video->Next();
                 }
-                video->Next();
-                return "{\"success\": true, \"message\": \"Shuffle mode enabled, playing next video\"}";
+                return "{\"success\": true, \"message\": \"Repeat mode enabled, playing next video\"}";
             }
 
             // Search playlist for matching video name and play it

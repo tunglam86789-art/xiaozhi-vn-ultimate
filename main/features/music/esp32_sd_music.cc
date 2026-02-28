@@ -565,8 +565,11 @@ Esp32SdMusic::~Esp32SdMusic()
     ESP_LOGI(TAG, "SD music module destroyed");
 }
 
-void Esp32SdMusic::Initialize(class SdCard* sd_card) {
+void Esp32SdMusic::Initialize(class SdCard* sd_card, AudioCodec *codec) {
     sd_card_ = sd_card;
+    if (codec) {
+        SetAudioCodec(codec);
+    }
     if (sd_card_ && sd_card_->IsMounted()) {
         root_directory_ = sd_card_->GetMountPoint();
     } else {

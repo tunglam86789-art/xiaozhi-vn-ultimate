@@ -54,7 +54,7 @@ public:
      * @brief Initialize the radio player.
      * @param codec  AudioCodec for direct PCM output (nullptr = use Application pipeline)
      */
-    void Initialize(AudioCodec* codec = nullptr);
+    void Initialize(AudioCodec* codec);
 
     /* ---- Radio interface ---- */
     bool PlayStation(const std::string& station_name) override;

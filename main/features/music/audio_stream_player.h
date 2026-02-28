@@ -40,6 +40,9 @@ class AudioCodec;
 /*  Macros -- eliminates magic numbers across the whole module         */
 /* ------------------------------------------------------------------ */
 
+/** Enable static task creation (1 = enabled, 0 = disabled) */
+#define AUDIO_STREAM_STATIC_TASK_CREATION  0
+
 /** Maximum audio buffer size (bytes) -- limits PSRAM usage */
 #define AUDIO_BUF_MAX_SIZE          (256 * 1024)
 
@@ -313,7 +316,15 @@ private:
 
     /* ---- FreeRTOS handles ---- */
     TaskHandle_t source_task_handle_;
+#if AUDIO_STREAM_STATIC_TASK_CREATION == 1
+    StaticTask_t* source_task_buffer_;
+    StackType_t* source_task_stack_;
+#endif
     TaskHandle_t play_task_handle_;
+#if AUDIO_STREAM_STATIC_TASK_CREATION == 1
+    StaticTask_t* play_task_buffer_;
+    StackType_t* play_task_stack_;
+#endif
     SemaphoreHandle_t pause_sem_;     ///< binary semaphore for pause/resume
 
     /* ---- Audio buffer (producer-consumer) ---- */

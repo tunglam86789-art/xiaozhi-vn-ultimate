@@ -150,7 +150,7 @@ public:
      * @brief Setup FFT display callback for a given audio player.
      * Installs FFT data callback and state callback for FFT lifecycle.
      */
-    void SetupFftDisplay(AudioStreamPlayer* player);
+    void SetupAudioPlayerCallback(AudioStreamPlayer* player);
 
     /* ================================================================== */
     /*  Component Initializers                                            */

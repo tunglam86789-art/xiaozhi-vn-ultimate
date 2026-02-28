@@ -42,7 +42,7 @@ public:
      * @brief Initialize the music player.
      * @param codec  AudioCodec for direct PCM output (nullptr = use Application pipeline)
      */
-    void Initialize(AudioCodec* codec = nullptr);
+    void Initialize(AudioCodec* codec);
 
     /* ---- Music interface ---- */
     bool Download(const std::string& song_name, const std::string& artist_name = "") override;

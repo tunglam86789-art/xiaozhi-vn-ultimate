@@ -1243,8 +1243,9 @@ bool Application::IsMediaPlaying() const {
  * EnsureIdleForMedia — transition device to idle before media playback
  *
  * Keeps media components fully decoupled from Application state
- * management.  Previously this logic lived inside AudioStreamPlayer
- * (EnterIdleDeviceState), which broke encapsulation.
+ * management. Media players can call this function to ensure the 
+ * device is in the correct state for playback without needing to know 
+ * the details of the state machine.
  * ------------------------------------------------------------------ */
 bool Application::EnsureIdleForMedia() {
     DeviceState ds = device_state_;
@@ -1292,12 +1293,12 @@ void Application::StopOtherMedia(MediaComponent except) {
         ESP_LOGI(TAG, "StopOtherMedia: stopping radio");
         radio_->Stop();
     }
+#ifdef CONFIG_SD_CARD_ENABLE
     if (except != MediaComponent::kSdMusic && sd_music_ &&
         sd_music_->getState() == Esp32SdMusic::PlayerState::Playing) {
         ESP_LOGI(TAG, "StopOtherMedia: stopping SD music");
         sd_music_->stop();
     }
-#ifdef CONFIG_SD_CARD_ENABLE
     if (except != MediaComponent::kVideo && sd_video_) {
         auto state = sd_video_->GetState();
         if (state == VideoPlayerState::Playing || state == VideoPlayerState::Paused) {
@@ -1308,7 +1309,7 @@ void Application::StopOtherMedia(MediaComponent except) {
 #endif
 }
 
-void Application::SetupFftDisplay(AudioStreamPlayer* player) {
+void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
     if (!player) return;
 
     // Forward FFT PCM data to the display spectrum visualizer
@@ -1319,12 +1320,21 @@ void Application::SetupFftDisplay(AudioStreamPlayer* player) {
         }
     });
 
+    player->SetPcmCallback([this](int16_t* pcm_data, int total_samples, int channels, int sample_rate) {
+        // This callback is called in the audio streaming thread, so we need to be careful about performance.
+        // We can use this callback to update the output timestamp for synchronization purposes.
+        audio_service_.UpdateOutputTimestamp();
+    });
+
     // Manage FFT lifecycle via player state transitions
     player->SetStateCallback([](AudioPlayerState old_state, AudioPlayerState new_state) {
         auto display = Board::GetInstance().GetDisplay();
         if (!display) return;
 
         if (new_state == AudioPlayerState::Playing) {
+            // When playback starts, ensure device is idle and ready for media
+            Application::GetInstance().EnsureIdleForMedia();
+
             // Allocate FFT buffer and start spectrum rendering
             display->MakeAudioBuffFFT(AUDIO_PCM_OUT_BUF_SIZE);
             display->StartFFT();
@@ -1337,7 +1347,7 @@ void Application::SetupFftDisplay(AudioStreamPlayer* player) {
         }
     });
 
-    ESP_LOGI(TAG, "SetupFftDisplay: FFT + state callbacks installed");
+    ESP_LOGI(TAG, "SetupAudioPlayerCallback: FFT + state callbacks installed");
 }
 
 /* ==================================================================
@@ -1351,8 +1361,9 @@ bool Application::InitMusic() {
         return false;
     }
 
-    music_->Initialize();
-    SetupFftDisplay(music_);
+    auto codec = Board::GetInstance().GetAudioCodec();
+    music_->Initialize(codec);
+    SetupAudioPlayerCallback(music_);
 
     McpFeatureTools::RegisterMusicTools(music_);
     ESP_LOGI(TAG, "InitMusic: online music player ready");
@@ -1366,8 +1377,9 @@ bool Application::InitRadio() {
         return false;
     }
 
-    radio_->Initialize();
-    SetupFftDisplay(radio_);
+    auto codec = Board::GetInstance().GetAudioCodec();
+    radio_->Initialize(codec);
+    SetupAudioPlayerCallback(radio_);
 
     McpFeatureTools::RegisterRadioTools(radio_);
     ESP_LOGI(TAG, "InitRadio: internet radio player ready");
@@ -1388,9 +1400,10 @@ bool Application::InitSdMusic() {
         return false;
     }
 
-    sd_music_->Initialize(sd_card);
+    auto codec = Board::GetInstance().GetAudioCodec();
+    sd_music_->Initialize(sd_card, codec);
     sd_music_->loadTrackList();
-    SetupFftDisplay(sd_music_);
+    SetupAudioPlayerCallback(sd_music_);
 
     McpFeatureTools::RegisterSdMusicTools(sd_music_);
     ESP_LOGI(TAG, "InitSdMusic: SD card music player ready");
@@ -1432,27 +1445,38 @@ bool Application::InitVideo() {
             sd_video_->SetRenderMode(VideoRenderMode::LvglCanvas);
 
             // Scan /sdcard/videos/ for .avi files and build playlist
-            sd_video_->ScanDirectory();
+            size_t found = sd_video_->ScanDirectory();
+            ESP_LOGI(TAG, "InitVideo: found %d video files on SD card", found);
+
+            // Manage main application UI lifecycle during video playback.
+            // Hide emoji/chat/idle card when video starts playing, restore
+            // when stopped — mirrors SetupAudioPlayerCallback() pattern for audio.
+            sd_video_->SetStateCallback([](VideoPlayerState old_state,
+                                        VideoPlayerState new_state) {
+                auto display = Board::GetInstance().GetDisplay();
+                if (!display) return;
+
+                if (new_state == VideoPlayerState::Playing) {
+                    // When playback starts, ensure device is idle and ready for media
+                    Application::GetInstance().EnsureIdleForMedia();
+
+                    // Activate media overlay to hide main UI (emoji/chat/idle card)
+                    display->SetMediaOverlayActive(true);
+                    ESP_LOGI(TAG, "Video playing: main UI hidden via media overlay");
+                } else if (old_state == VideoPlayerState::Playing &&
+                        (new_state == VideoPlayerState::Idle ||
+                            new_state == VideoPlayerState::Stopping)) {
+                    display->SetMediaOverlayActive(false);
+                    ESP_LOGI(TAG, "Video stopped: main UI restored via media overlay");
+                }
+            });
+
+            sd_video_->SetAudioCallback([this](int16_t* pcm, size_t samples, int channels) {
+                // This callback is called in the video decoding thread, so we need to be careful about performance.
+                // We can use this callback to update the output timestamp for synchronization purposes.
+                audio_service_.UpdateOutputTimestamp();
+            });
         }
-
-        // Manage main application UI lifecycle during video playback.
-        // Hide emoji/chat/idle card when video starts playing, restore
-        // when stopped — mirrors SetupFftDisplay() pattern for audio.
-        sd_video_->SetStateCallback([](VideoPlayerState old_state,
-                                       VideoPlayerState new_state) {
-            auto display = Board::GetInstance().GetDisplay();
-            if (!display) return;
-
-            if (new_state == VideoPlayerState::Playing) {
-                display->SetMediaOverlayActive(true);
-                ESP_LOGI(TAG, "Video playing: main UI hidden via media overlay");
-            } else if (old_state == VideoPlayerState::Playing &&
-                       (new_state == VideoPlayerState::Idle ||
-                        new_state == VideoPlayerState::Stopping)) {
-                display->SetMediaOverlayActive(false);
-                ESP_LOGI(TAG, "Video stopped: main UI restored via media overlay");
-            }
-        });
 
         McpFeatureTools::RegisterSdVideoTools(sd_video_);
         ESP_LOGI(TAG, "InitVideo: video player ready");

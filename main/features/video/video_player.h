@@ -54,6 +54,9 @@ class Display;
 /*  Configuration constants (tunable per board)                       */
 /* ------------------------------------------------------------------ */
 
+/* Enable static task creation (1 = enabled, 0 = disabled) */
+#define VIDEO_PLAYER_STATIC_TASK_CREATION 1
+
 /* Number of video lines per frame buffer chunk for partial drawing */
 #define VIDEO_AVI_BUFFER_LINES      40 
 
@@ -417,6 +420,10 @@ private:
 
     /* ---- Render task (independent from AVI demuxer task) ---- */
     TaskHandle_t      render_task_handle_  = nullptr;
+#if VIDEO_PLAYER_STATIC_TASK_CREATION == 1
+    StackType_t*      render_task_stack_   = nullptr;
+    StaticTask_t*     render_task_buffer_  = nullptr;
+#endif
     SemaphoreHandle_t render_sem_          = nullptr;  ///< Signals new frame ready
     SemaphoreHandle_t mjpeg_mutex_         = nullptr;  ///< Protects pending MJPEG buffer
     uint8_t*          pending_mjpeg_buf_   = nullptr;  ///< AVI cb writes MJPEG here

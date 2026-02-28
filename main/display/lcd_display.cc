@@ -1618,10 +1618,11 @@ void LcdDisplay::periodicUpdateTask() {
         create_canvas(status_h);
 
         if (canvas_) {
-            // Hide main UI for media overlay, then build music UI
-            SetMediaOverlayActive(true);
             {
                 DisplayLockGuard lock(this);
+                
+                // Hide main UI for media overlay, then build music UI
+                SetMediaOverlayActive(true);
 
                 // Clear nền
                 lv_canvas_fill_bg(canvas_, lv_color_black(), LV_OPA_COVER);

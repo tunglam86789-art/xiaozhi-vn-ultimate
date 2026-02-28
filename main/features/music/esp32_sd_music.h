@@ -83,7 +83,7 @@ public:
     Esp32SdMusic();
     ~Esp32SdMusic();
 
-    void Initialize(class SdCard* sd_card);
+    void Initialize(class SdCard* sd_card, AudioCodec *codec);
 
     // ============================================================
     // 6) Playlist API

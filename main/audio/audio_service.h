@@ -23,6 +23,8 @@
 #include "wake_word.h"
 #include "protocol.h"
 
+/* Enable static task creation (1 = enabled, 0 = disabled) */
+#define AUDIO_SERVICE_STATIC_TASK_CREATION 1
 
 /*
  * There are two types of audio data flow:
@@ -129,8 +131,20 @@ private:
 
     // Audio encode / decode
     TaskHandle_t audio_input_task_handle_ = nullptr;
+#if AUDIO_SERVICE_STATIC_TASK_CREATION == 1
+    StaticTask_t* audio_input_task_buffer_ = nullptr;
+    StackType_t* audio_input_task_stack_ = nullptr;
+#endif
     TaskHandle_t audio_output_task_handle_ = nullptr;
+#if AUDIO_SERVICE_STATIC_TASK_CREATION == 1
+    StaticTask_t* audio_output_task_buffer_ = nullptr;
+    StackType_t* audio_output_task_stack_ = nullptr;
+#endif
     TaskHandle_t opus_codec_task_handle_ = nullptr;
+#if AUDIO_SERVICE_STATIC_TASK_CREATION == 1
+    StaticTask_t* opus_codec_task_buffer_ = nullptr;
+    StackType_t* opus_codec_task_stack_ = nullptr;
+#endif
     std::mutex audio_queue_mutex_;
     std::condition_variable audio_queue_cv_;
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_decode_queue_;

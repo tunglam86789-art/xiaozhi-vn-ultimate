@@ -108,15 +108,10 @@ bool VideoPlayer::Initialize(esp_lcd_panel_handle_t lcd_panel,
     ESP_LOGI(TAG, "MJPEG buffers allocated: 2 x %d bytes in PSRAM", VIDEO_AVI_BUFFER_SIZE);
 
     /* ---- Initialize JPEG decoder (software, MJPEG → RGB565) ---- */
-    if (!InitJpegDecoder(mode)) {
+    if (!InitJpegDecoder(render_mode_)) {
         ESP_LOGE(TAG, "Failed to initialize JPEG decoder");
         Deinitialize();
         return false;
-    }
-
-    /* ---- Create LVGL canvas if using canvas render mode ---- */
-    if (mode == VideoRenderMode::LvglCanvas) {
-        CreateVideoCanvas();
     }
 
     /* ---- Create synchronization primitives for render task ---- */
@@ -130,6 +125,26 @@ bool VideoPlayer::Initialize(esp_lcd_panel_handle_t lcd_panel,
 
     /* ---- Start the independent render task ---- */
     render_exit_.store(false);
+
+#if VIDEO_PLAYER_STATIC_TASK_CREATION == 1
+    if (render_task_stack_ == nullptr) {
+        render_task_stack_ = (StackType_t*)heap_caps_malloc(VIDEO_RENDER_TASK_STACK, MALLOC_CAP_SPIRAM);
+        assert(render_task_stack_ != nullptr);
+    }
+    if (render_task_buffer_ == nullptr) {
+        render_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+        assert(render_task_buffer_ != nullptr);
+    }
+    render_task_handle_ = xTaskCreateStatic(RenderTaskEntry, "vid_render",
+                                            VIDEO_RENDER_TASK_STACK, this,
+                                            VIDEO_RENDER_TASK_PRIORITY,
+                                            render_task_stack_, render_task_buffer_);
+    if (render_task_handle_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create render task");
+        Deinitialize();
+        return false;
+    }
+#else
     BaseType_t ret = xTaskCreatePinnedToCore(
         RenderTaskEntry, "vid_render",
         VIDEO_RENDER_TASK_STACK, this,
@@ -141,6 +156,7 @@ bool VideoPlayer::Initialize(esp_lcd_panel_handle_t lcd_panel,
         Deinitialize();
         return false;
     }
+#endif
     ESP_LOGI(TAG, "Render task created: core=%d prio=%d stack=%d",
              VIDEO_RENDER_TASK_CORE, VIDEO_RENDER_TASK_PRIORITY, VIDEO_RENDER_TASK_STACK);
 
@@ -171,6 +187,15 @@ void VideoPlayer::Deinitialize() {
             vTaskDelete(render_task_handle_);
         }
         render_task_handle_ = nullptr;
+#if VIDEO_PLAYER_STATIC_TASK_CREATION == 1
+        assert(render_task_buffer_ != nullptr);
+        assert(render_task_stack_ != nullptr);
+        heap_caps_free(render_task_buffer_);
+        render_task_buffer_ = nullptr;
+        heap_caps_free(render_task_stack_);
+        render_task_stack_ = nullptr;
+#endif
+
         render_exit_.store(false);
     }
 
@@ -894,12 +919,6 @@ void VideoPlayer::SetRenderMode(VideoRenderMode mode) {
         }
     }
 
-    if (mode == VideoRenderMode::LvglCanvas) {
-        CreateVideoCanvas();
-    } else if (old_mode == VideoRenderMode::LvglCanvas) {
-        DestroyVideoCanvas();
-    }
-
     ESP_LOGI(TAG, "Render mode: %s -> %s",
              old_mode == VideoRenderMode::DirectLcd ? "DirectLcd" : "LvglCanvas",
              mode == VideoRenderMode::DirectLcd ? "DirectLcd" : "LvglCanvas");
@@ -1076,6 +1095,33 @@ void VideoPlayer::SetState(VideoPlayerState new_state) {
     if (old_state != new_state) {
         ESP_LOGD(TAG, "State: %d → %d",
                  static_cast<int>(old_state), static_cast<int>(new_state));
+
+        switch (new_state)
+        {
+        case VideoPlayerState::Idle:
+            if (render_mode_ == VideoRenderMode::LvglCanvas) {
+                DestroyVideoCanvas();
+            }
+            break;
+        case VideoPlayerState::Loading:
+            if (render_mode_ == VideoRenderMode::LvglCanvas) {
+                CreateVideoCanvas();
+            }
+            break;
+        case VideoPlayerState::Playing:
+            break;
+        case VideoPlayerState::Paused:
+            break;
+        case VideoPlayerState::Stopping:
+            break;
+        case VideoPlayerState::Error:
+            if (render_mode_ == VideoRenderMode::LvglCanvas) {
+                DestroyVideoCanvas();
+            }
+             break;
+        default:
+            break;
+        }
 
         /* Virtual hook */
         OnPlaybackStateChanged(old_state, new_state);

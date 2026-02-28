@@ -98,20 +98,64 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
 
     /* Launch source task */
     is_source_active_ = true;
+#if AUDIO_STREAM_STATIC_TASK_CREATION == 1
+    if (source_task_stack_ == nullptr) {
+        source_task_stack_ = (StackType_t*)heap_caps_malloc(AUDIO_SOURCE_TASK_STACK, MALLOC_CAP_SPIRAM);
+        assert(source_task_stack_ != nullptr);
+    }
+    if (source_task_buffer_ == nullptr) {
+        source_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+        assert(source_task_buffer_ != nullptr);
+    }
+    source_task_handle_ = xTaskCreateStaticPinnedToCore(
+        SourceTaskEntry, "stream_src",
+        AUDIO_SOURCE_TASK_STACK, this,
+        AUDIO_SOURCE_TASK_PRIO, source_task_stack_, source_task_buffer_,
+        AUDIO_SOURCE_TASK_CORE);
+
+    if (source_task_handle_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create source task");
+        is_source_active_ = false;
+        return false;
+    }
+#else
     BaseType_t ret = xTaskCreatePinnedToCore(
         SourceTaskEntry, "stream_src",
         AUDIO_SOURCE_TASK_STACK, this,
         AUDIO_SOURCE_TASK_PRIO, &source_task_handle_,
         AUDIO_SOURCE_TASK_CORE);
-
+    
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create source task");
         is_source_active_ = false;
         return false;
     }
+#endif
 
     /* Launch playback task */
     is_playing_ = true;
+#if AUDIO_STREAM_STATIC_TASK_CREATION == 1
+    if (play_task_stack_ == nullptr) {
+        play_task_stack_ = (StackType_t*)heap_caps_malloc(AUDIO_PLAY_TASK_STACK, MALLOC_CAP_SPIRAM);
+        assert(play_task_stack_ != nullptr);
+    }
+    if (play_task_buffer_ == nullptr) {
+        play_task_buffer_ = (StaticTask_t*)heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+        assert(play_task_buffer_ != nullptr);
+    }
+    play_task_handle_ = xTaskCreateStaticPinnedToCore(
+        PlayTaskEntry, "stream_play",
+        AUDIO_PLAY_TASK_STACK, this,
+        AUDIO_PLAY_TASK_PRIO, play_task_stack_, play_task_buffer_,
+        AUDIO_PLAY_TASK_CORE);
+    
+    if (play_task_handle_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create playback task");
+        is_playing_       = false;
+        is_source_active_ = false;
+        return false;
+    }
+#else
     ret = xTaskCreatePinnedToCore(
         PlayTaskEntry, "stream_play",
         AUDIO_PLAY_TASK_STACK, this,
@@ -124,6 +168,7 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
         is_source_active_ = false;
         return false;
     }
+#endif
 
     ESP_LOGI(TAG, "Stream tasks started");
     return true;
@@ -160,6 +205,14 @@ bool AudioStreamPlayer::StopStream()
             if (eTaskGetState(source_task_handle_) == eDeleted) break;
         }
         source_task_handle_ = nullptr;
+#if AUDIO_STREAM_STATIC_TASK_CREATION == 1
+        assert(source_task_buffer_ != nullptr);
+        assert(source_task_stack_ != nullptr);
+        heap_caps_free(source_task_buffer_);
+        source_task_buffer_ = nullptr;
+        heap_caps_free(source_task_stack_);
+        source_task_stack_ = nullptr;
+#endif
     }
 
     /* Wait for play task */
@@ -172,6 +225,14 @@ bool AudioStreamPlayer::StopStream()
             if (eTaskGetState(play_task_handle_) == eDeleted) break;
         }
         play_task_handle_ = nullptr;
+#if AUDIO_STREAM_STATIC_TASK_CREATION == 1
+        assert(play_task_buffer_ != nullptr);
+        assert(play_task_stack_ != nullptr);
+        heap_caps_free(play_task_buffer_);
+        play_task_buffer_ = nullptr;
+        heap_caps_free(play_task_stack_);
+        play_task_stack_ = nullptr;
+#endif
     }
 
     ClearAudioBuffer();
@@ -277,7 +338,7 @@ void AudioStreamPlayer::SourceDataLoop(const std::string& source)
 
     ESP_LOGI(TAG, "HTTP connected, status=%d", status);
 
-    char* buf = new (std::nothrow) char[AUDIO_HTTP_CHUNK_SIZE];
+    char* buf = (char*)heap_caps_malloc(AUDIO_HTTP_CHUNK_SIZE, MALLOC_CAP_SPIRAM);
     if (!buf) {
         ESP_LOGE(TAG, "Read buffer alloc failed");
         http->Close();
@@ -334,7 +395,7 @@ void AudioStreamPlayer::SourceDataLoop(const std::string& source)
         }
     }
 
-    delete[] buf;
+    heap_caps_free(buf);
     http->Close();
 
     ESP_LOGI(TAG, "HTTP source finished. Total: %zu bytes", total);
@@ -393,14 +454,13 @@ void AudioStreamPlayer::PlayLoop()
     // Application::EnsureIdleForMedia() before starting playback.
     SetPlayerState(AudioPlayerState::Playing);
 
-    auto codec = Board::GetInstance().GetAudioCodec();
-    if (!codec) {
+    if (!audio_codec_) {
         ESP_LOGE(TAG, "Audio codec not available");
         is_playing_ = false;
         return;
     }
-    if (!codec->output_enabled()) {
-        codec->EnableOutput(true);
+    if (!audio_codec_->output_enabled()) {
+        audio_codec_->EnableOutput(true);
     }
 
     /* Choose path based on decoder type */
@@ -498,7 +558,7 @@ void AudioStreamPlayer::OutputPcmFrame(int16_t* pcm_in, int total_samples,
 }
 
 /* ================================================================== */
-/*  OutputPcmDirect -- direct codec output (like VideoPlayer)         */
+/*  OutputPcmDirect -- direct codec output                            */
 /* ================================================================== */
 
 void AudioStreamPlayer::OutputPcmDirect(int16_t* pcm_in, int total_samples,
@@ -763,10 +823,9 @@ void AudioStreamPlayer::PlayLoopWav()
     }
 
     /* Set codec sample rate */
-    auto codec = Board::GetInstance().GetAudioCodec();
-    if (codec && codec->output_sample_rate() != sr) {
+    if (audio_codec_ && audio_codec_->output_sample_rate() != sr) {
         ESP_LOGI(TAG, "Set sample rate -> %d Hz", sr);
-        codec->SetOutputSampleRate(sr);
+        audio_codec_->SetOutputSampleRate(sr);
     }
 
     /* Notify subclass */
@@ -944,12 +1003,11 @@ AudioDecoderType AudioStreamPlayer::DetectStreamType(const uint8_t* data, size_t
 
 void AudioStreamPlayer::ResetSampleRate()
 {
-    auto codec = Board::GetInstance().GetAudioCodec();
-    if (codec && codec->original_output_sample_rate() > 0 &&
-        codec->output_sample_rate() != codec->original_output_sample_rate()) {
+    if (audio_codec_ && audio_codec_->original_output_sample_rate() > 0 &&
+        audio_codec_->output_sample_rate() != audio_codec_->original_output_sample_rate()) {
         ESP_LOGI(TAG, "Reset sample rate: %d -> %d",
-                 codec->output_sample_rate(),
-                 codec->original_output_sample_rate());
-        codec->SetOutputSampleRate(-1);
+                 audio_codec_->output_sample_rate(),
+                 audio_codec_->original_output_sample_rate());
+        audio_codec_->SetOutputSampleRate(-1);
     }
 }
