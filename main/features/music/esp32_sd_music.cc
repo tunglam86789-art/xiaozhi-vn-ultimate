@@ -1,6 +1,5 @@
 #include "esp32_sd_music.h"
 #include "board.h"
-#include "display.h"
 #include "audio_codec.h"
 #include "application.h"
 #include "sd_card.h"
@@ -1600,28 +1599,8 @@ void Esp32SdMusic::OnPlaybackFinished()
 
 void Esp32SdMusic::OnDisplayReady()
 {
-    TrackInfo track;
-    {
-        std::lock_guard<std::mutex> lock(playlist_mutex_);
-        if (current_index_ >= 0 && current_index_ < (int)playlist_.size()) {
-            track = playlist_[current_index_];
-        }
-    }
-
-    auto display = Board::GetInstance().GetDisplay();
-    if (display) {
-        std::string title  = !track.title.empty() ? track.title : track.name;
-        std::string artist = track.artist;
-
-        std::string line;
-        if (!artist.empty()) {
-            line = artist + " - " + title;
-        } else {
-            line = title;
-        }
-
-        display->SetMusicInfo(line.c_str());
-    }
+    /* Display is now handled externally via Application callbacks */
+    ESP_LOGD("Esp32SdMusic", "Display ready callback");
 }
 
 void Esp32SdMusic::OnPauseStateChanged(bool paused)
@@ -1722,11 +1701,6 @@ Esp32SdMusic::TrackProgress Esp32SdMusic::updateProgress() const
     p.position_ms = GetPlayTimeMs();
     p.duration_ms = total_duration_ms_.load();
     return p;
-}
-
-int16_t* Esp32SdMusic::getFFTData() const
-{
-    return const_cast<Esp32SdMusic*>(this)->GetAudioData();
 }
 
 Esp32SdMusic::PlayerState Esp32SdMusic::getState() const

@@ -38,7 +38,11 @@ public:
     Esp32Music();
     virtual ~Esp32Music();
 
-    void Initialize();
+    /**
+     * @brief Initialize the music player.
+     * @param codec  AudioCodec for direct PCM output (nullptr = use Application pipeline)
+     */
+    void Initialize(AudioCodec* codec = nullptr);
 
     /* ---- Music interface ---- */
     bool Download(const std::string& song_name, const std::string& artist_name = "") override;
@@ -49,7 +53,6 @@ public:
 
     size_t GetBufferSize() const override { return AudioStreamPlayer::GetBufferSize(); }
     bool IsDownloading() const override   { return AudioStreamPlayer::IsDownloading(); }
-    int16_t* GetAudioData() override      { return AudioStreamPlayer::GetAudioData(); }
     bool IsPlaying() const override       { return AudioStreamPlayer::IsPlaying(); }
 
     /* ---- Display mode (re-expose base enum with LYRICS alias) ---- */

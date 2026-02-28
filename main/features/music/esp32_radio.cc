@@ -9,11 +9,10 @@
 
 #include "esp32_radio.h"
 #include "board.h"
-#include "display/display.h"
+#include "audio/audio_codec.h"
 
 #include <esp_log.h>
 #include <algorithm>
-#include <sstream>
 #include <cctype>
 
 static const char* TAG = "Esp32Radio";
@@ -36,10 +35,14 @@ Esp32Radio::~Esp32Radio()
     ESP_LOGI(TAG, "Esp32Radio destroyed");
 }
 
-void Esp32Radio::Initialize()
+void Esp32Radio::Initialize(AudioCodec* codec)
 {
+    if (codec) {
+        SetAudioCodec(codec);
+    }
     InitializeRadioStations();
-    ESP_LOGI(TAG, "Radio player initialised with %d stations", (int)radio_stations_.size());
+    ESP_LOGI(TAG, "Radio player initialised with %d stations (codec=%s)",
+             (int)radio_stations_.size(), codec ? "direct" : "app-pipeline");
 }
 
 /* ================================================================== */
@@ -255,33 +258,15 @@ std::vector<std::string> Esp32Radio::GetStationList() const
 
 void Esp32Radio::OnStreamInfoReady(int sample_rate, int bits_per_sample, int channels)
 {
-    auto display = Board::GetInstance().GetDisplay();
-    if (!display) return;
-
-    const char* codec_str = (GetDisplayMode() == DISPLAY_MODE_INFO) ? "" :
-        ((channels > 0) ? "AAC" : "MP3");  /* simplified */
-
-    std::ostringstream oss;
-    oss << "RADIO « " << current_station_name_ << " »\n"
-        << sample_rate << "Hz  "
-        << bits_per_sample << "bit  "
-        << channels << "ch";
-
-    display->SetMusicInfo(oss.str().c_str());
-    ESP_LOGI(TAG, "Stream info displayed: %s, codec: %s", oss.str().c_str(), codec_str);
+    ESP_LOGI(TAG, "Stream info: %s, %d Hz, %d bit, %d ch",
+             current_station_name_.c_str(), sample_rate, bits_per_sample, channels);
 }
 
 void Esp32Radio::OnDisplayReady()
 {
-    if (station_name_displayed_) return;
-
-    auto display = Board::GetInstance().GetDisplay();
-    if (display && !current_station_name_.empty()) {
-        std::string info = "Radio « " + current_station_name_ + " » Đang phát...";
-        display->SetMusicInfo(info.c_str());
-        ESP_LOGI(TAG, "Display: %s", info.c_str());
-        station_name_displayed_ = true;
-    }
+    /* Display is now handled externally via Application callbacks */
+    ESP_LOGD(TAG, "Display ready for station: %s", current_station_name_.c_str());
+    station_name_displayed_ = true;
 }
 
 void Esp32Radio::OnPlaybackFinished()

@@ -10,8 +10,8 @@
  *   - Producer-consumer buffer in PSRAM
  *   - Decoder lifecycle (esp_audio_codec: MP3/AAC/FLAC, plus WAV passthrough)
  *   - PCM output, mono down-mix, volume amplification
- *   - FFT display feeding
  *   - Pause / resume support
+ *   - FFT / display handled externally via callbacks
  *   - FreeRTOS tasks pinned to specific cores
  *
  * Subclasses override hooks to customize behaviour per use-case.
@@ -21,6 +21,7 @@
 #include <queue>
 #include <atomic>
 #include <vector>
+#include <functional>
 #include <cstdint>
 
 #include <freertos/FreeRTOS.h>
@@ -31,6 +32,9 @@ extern "C" {
 #include "esp_audio_simple_dec.h"
 #include "esp_audio_simple_dec_default.h"
 }
+
+/* Forward declaration */
+class AudioCodec;
 
 /* ------------------------------------------------------------------ */
 /*  Macros -- eliminates magic numbers across the whole module         */
@@ -87,14 +91,38 @@ extern "C" {
 /** Reconnect delay (ms) */
 #define AUDIO_RECONNECT_DELAY_MS    1500
 
-/** Buffer wait timeout when checking for idle state (ms) */
-#define AUDIO_STATE_POLL_MS         50
-
-/** Delay after toggling chat state (ms) */
-#define AUDIO_CHAT_TOGGLE_DELAY_MS  500
-
 /** WAV PCM block size in samples (matching MP3 frame) */
 #define AUDIO_WAV_BLOCK_SAMPLES     (1152 * 2)
+
+/* ------------------------------------------------------------------ */
+/*  Audio player state machine (mirrors VideoPlayerState)             */
+/* ------------------------------------------------------------------ */
+
+enum class AudioPlayerState {
+    Idle = 0,       ///< No stream active, ready for commands
+    Loading,        ///< Opening stream / buffering initial data
+    Playing,        ///< Active playback (decoding + audio output)
+    Paused,         ///< Playback paused, can resume
+    Stopping,       ///< Tearing down resources
+    Error           ///< Unrecoverable error (call Stop to reset)
+};
+
+/* ------------------------------------------------------------------ */
+/*  Callback typedefs for audio player events                        */
+/* ------------------------------------------------------------------ */
+
+/** Called when audio player state changes */
+using AudioStateCallback = std::function<void(AudioPlayerState old_state, AudioPlayerState new_state)>;
+
+/** Called when a stream finishes (naturally or stopped) */
+using AudioEndCallback = std::function<void(const std::string& source)>;
+
+/** Called with FFT-ready PCM data for spectrum display */
+using AudioFftCallback = std::function<void(int16_t* pcm_data, size_t pcm_bytes)>;
+
+/** Called with decoded PCM frame data for custom processing */
+using AudioPcmCallback = std::function<void(int16_t* pcm_data, int total_samples,
+                                            int channels, int sample_rate)>;
 
 /* ------------------------------------------------------------------ */
 /*  Decoder type enum                                                 */
@@ -156,7 +184,19 @@ public:
     bool  IsDownloading() const        { return is_source_active_.load(); }
     bool  IsSourceActive() const       { return is_source_active_.load(); }
     size_t GetBufferSize() const       { return buffer_size_; }
-    int16_t* GetAudioData()            { return fft_pcm_ptr_; }
+
+    /* ---- State machine ---- */
+    AudioPlayerState GetPlayerState() const { return player_state_.load(); }
+
+    /* ---- Audio codec (direct PCM output) ---- */
+    void SetAudioCodec(AudioCodec* codec) { audio_codec_ = codec; }
+    AudioCodec* GetAudioCodec() const { return audio_codec_; }
+
+    /* ---- Callbacks ---- */
+    void SetStateCallback(AudioStateCallback cb)  { state_callback_ = std::move(cb); }
+    void SetEndCallback(AudioEndCallback cb)      { end_callback_ = std::move(cb); }
+    void SetFftCallback(AudioFftCallback cb)      { fft_callback_ = std::move(cb); }
+    void SetPcmCallback(AudioPcmCallback cb)      { pcm_callback_ = std::move(cb); }
 
     /* ---- Pause / Resume ---- */
     void  PauseStream();
@@ -233,10 +273,15 @@ private:
     void OutputPcmFrame(int16_t* pcm_in, int total_samples, int channels,
                         int sample_rate, int frame_duration_ms);
 
+    /** Output PCM directly through AudioCodec (bypasses Application pipeline) */
+    void OutputPcmDirect(int16_t* pcm_in, int total_samples, int channels,
+                         int sample_rate);
+
+    /** Transition player state with notification */
+    void SetPlayerState(AudioPlayerState new_state);
+
     /* ---- Common playback helpers ---- */
-    void EnterIdleDeviceState();
     bool HandlePause();
-    void StartFFTOnce();
 
     /* ---- Buffer helpers ---- */
     void ClearAudioBuffer();
@@ -254,7 +299,17 @@ private:
     std::atomic<bool> is_source_active_;
     std::atomic<bool> is_paused_;
     std::atomic<DisplayMode> display_mode_;
+    std::atomic<AudioPlayerState> player_state_{AudioPlayerState::Idle};
     float volume_factor_;
+
+    /* ---- Audio codec (direct output) ---- */
+    AudioCodec* audio_codec_ = nullptr;
+
+    /* ---- Callbacks ---- */
+    AudioStateCallback state_callback_;
+    AudioEndCallback   end_callback_;
+    AudioFftCallback   fft_callback_;
+    AudioPcmCallback   pcm_callback_;
 
     /* ---- FreeRTOS handles ---- */
     TaskHandle_t source_task_handle_;
@@ -285,11 +340,6 @@ private:
     /* ---- Playback timing ---- */
     int64_t current_play_time_ms_;
     int     total_frames_decoded_;
-    bool    fft_started_;
-    bool    info_displayed_;
-
-    /* ---- FFT ---- */
-    int16_t* fft_pcm_ptr_;
 
     /* ---- Source path / URL ---- */
     std::string stream_url_;

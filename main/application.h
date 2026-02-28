@@ -18,6 +18,8 @@
 #include "esp32_sd_music.h"
 #include "esp32_music.h"
 #include "esp32_radio.h"
+class AudioStreamPlayer;
+class VideoPlayer;
 
 // --- Display Weather ---
 #include "display.h"
@@ -76,6 +78,95 @@ public:
 	Esp32Music* GetMusic() { return music_; }
 	Esp32Radio* GetRadio() { return radio_; }
 	Esp32SdMusic* GetSdMusic() { return sd_music_; }
+	VideoPlayer* GetVideo() { return sd_video_; }
+
+    /* ================================================================== */
+    /*  Media Player APIs                                                 */
+    /* ================================================================== */
+
+    /**
+     * @brief Play online music by song name.
+     * @param song_name   Song name to search for
+     * @param artist_name Optional artist name filter
+     * @return true if playback started
+     */
+    bool PlayMusic(const std::string& song_name, const std::string& artist_name = "");
+
+    /**
+     * @brief Play a radio station by name.
+     * @param station_name Station name or key (e.g. "VOV1")
+     * @return true if playback started
+     */
+    bool PlayRadio(const std::string& station_name);
+
+    /**
+     * @brief Play radio from custom URL.
+     * @param url          Stream URL
+     * @param station_name Optional display name
+     * @return true if playback started
+     */
+    bool PlayRadioUrl(const std::string& url, const std::string& station_name = "");
+
+    /**
+     * @brief Play media from SD card (music or video).
+     * @param keyword  File name or search keyword
+     * @param is_video true to play as AVI video, false for audio
+     * @return true if playback started
+     */
+    bool PlaySdMedia(const std::string& keyword, bool is_video = false);
+
+    /**
+     * @brief Play AVI video from SD card by full path.
+     * @param file_path Absolute path to AVI file
+     * @return true if playback started
+     */
+    bool PlayVideo(const std::string& file_path);
+
+    /**
+     * @brief Stop all media playback (music, radio, SD music, video).
+     */
+    void StopAllMedia();
+
+    /**
+     * @brief Check if any media is currently playing.
+     */
+    bool IsMediaPlaying() const;
+
+    /**
+     * @brief Ensure device is in idle state before media playback.
+     *
+     * If the device is in Listening or Speaking state, toggles the chat
+     * to transition back to Idle.  Blocks until the transition completes
+     * (up to a configurable timeout).
+     *
+     * Must be called from outside the audio player — keeps media
+     * components decoupled from Application state management.
+     *
+     * @return true if device is now in idle (or was already idle)
+     */
+    bool EnsureIdleForMedia();
+
+    /**
+     * @brief Setup FFT display callback for a given audio player.
+     * Installs FFT data callback and state callback for FFT lifecycle.
+     */
+    void SetupFftDisplay(AudioStreamPlayer* player);
+
+    /* ================================================================== */
+    /*  Component Initializers                                            */
+    /* ================================================================== */
+
+    /** Initialize online music player and register MCP tools. */
+    bool InitMusic();
+
+    /** Initialize internet radio player and register MCP tools. */
+    bool InitRadio();
+
+    /** Initialize SD card music player and register MCP tools. */
+    bool InitSdMusic();
+
+    /** Initialize SD card video player and register MCP tools. */
+    bool InitVideo();
 
 private:
     Application();
@@ -94,12 +185,36 @@ private:
     Esp32Music* music_ = nullptr;
     Esp32Radio* radio_ = nullptr;
     Esp32SdMusic* sd_music_ = nullptr;
+    VideoPlayer* sd_video_ = nullptr;
 
     bool has_server_time_ = false;
     bool aborted_ = false;
     int clock_ticks_ = 0;
     TaskHandle_t check_new_version_task_handle_ = nullptr;
     TaskHandle_t main_event_loop_task_handle_ = nullptr;
+
+    /**
+     * @brief Identifies which media component to exclude from stopping.
+     * Used by StopOtherMedia() to skip the component about to play.
+     */
+    enum class MediaComponent : uint8_t {
+        kNone     = 0,   ///< Stop all media (no exclusion)
+        kMusic    = 1,   ///< Keep music, stop everything else
+        kRadio    = 2,   ///< Keep radio, stop everything else
+        kSdMusic  = 3,   ///< Keep SD music, stop everything else
+        kVideo    = 4,   ///< Keep video, stop everything else
+    };
+
+    /**
+     * @brief Stop all active media playback except the specified component.
+     *
+     * Centralized media teardown: conditionally stops music, radio,
+     * SD music and video. Each component is stopped only when currently
+     * active. Call with kNone (default) to stop everything.
+     *
+     * @param except  Component to skip (default: kNone = stop all)
+     */
+    void StopOtherMedia(MediaComponent except = MediaComponent::kNone);
 
     void OnWakeWordDetected();
     void CheckNewVersion(Ota& ota);

@@ -50,7 +50,11 @@ public:
     Esp32Radio();
     virtual ~Esp32Radio();
 
-    void Initialize();
+    /**
+     * @brief Initialize the radio player.
+     * @param codec  AudioCodec for direct PCM output (nullptr = use Application pipeline)
+     */
+    void Initialize(AudioCodec* codec = nullptr);
 
     /* ---- Radio interface ---- */
     bool PlayStation(const std::string& station_name) override;
@@ -64,7 +68,6 @@ public:
 
     size_t GetBufferSize() const override  { return AudioStreamPlayer::GetBufferSize(); }
     bool IsDownloading() const override    { return AudioStreamPlayer::IsDownloading(); }
-    int16_t* GetAudioData() override       { return AudioStreamPlayer::GetAudioData(); }
 
     /* Display mode */
     using AudioStreamPlayer::DisplayMode;

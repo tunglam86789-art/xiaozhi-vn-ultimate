@@ -82,6 +82,9 @@ class Display;
 /** Maximum number of files in a single directory scan */
 #define VIDEO_MAX_FILES             256
 
+/** FPS log interval in seconds (0 = disabled) */
+#define VIDEO_FPS_LOG_INTERVAL_SEC  5
+
 /** Render task stack size (bytes) — runs JPEG decode + LCD/canvas draw */
 #define VIDEO_RENDER_TASK_STACK     (8 * 1024)
 
@@ -153,11 +156,20 @@ enum class VideoRenderMode {
 /*  Callback typedefs for event notification                          */
 /* ------------------------------------------------------------------ */
 
-/** Called when playback state changes */
-using VideoStateCallback = std::function<void(VideoPlayerState new_state)>;
+/** Called when playback state changes (with both old and new state) */
+using VideoStateCallback = std::function<void(VideoPlayerState old_state, VideoPlayerState new_state)>;
 
 /** Called when a video file finishes playing (natural end or error) */
 using VideoEndCallback = std::function<void(const std::string& file_path)>;
+
+/** Called when FPS stats are available (periodic report) */
+using VideoFpsCallback = std::function<void(float fps, float avg_decode_ms, float avg_draw_ms)>;
+
+/** Called on each decoded video frame (for custom post-processing) */
+using VideoFrameCallback = std::function<void(uint16_t* rgb565, uint16_t w, uint16_t h)>;
+
+/** Called on each PCM audio chunk (for custom audio processing) */
+using VideoAudioCallback = std::function<void(int16_t* pcm, size_t samples, int channels)>;
 
 /* ------------------------------------------------------------------ */
 /*  VideoPlayer class                                                 */
@@ -187,7 +199,7 @@ public:
     bool Initialize(esp_lcd_panel_handle_t lcd_panel,
                     uint16_t lcd_width, uint16_t lcd_height,
                     AudioCodec* codec, SdCard* sd_card,
-                    Display* display = nullptr);
+                    Display* display = nullptr, VideoRenderMode mode = VideoRenderMode::DirectLcd);
 
     /**
      * @brief Release all resources. Safe to call multiple times.
@@ -276,6 +288,9 @@ public:
 
     void SetStateCallback(VideoStateCallback cb) { state_callback_ = std::move(cb); }
     void SetEndCallback(VideoEndCallback cb) { end_callback_ = std::move(cb); }
+    void SetFpsCallback(VideoFpsCallback cb) { fps_callback_ = std::move(cb); }
+    void SetFrameCallback(VideoFrameCallback cb) { frame_callback_ = std::move(cb); }
+    void SetAudioCallback(VideoAudioCallback cb) { audio_callback_ = std::move(cb); }
 
     /* ---- Render mode ---- */
 
@@ -339,9 +354,22 @@ private:
     void HandleAudioClock(uint32_t rate, uint32_t bits, uint32_t ch);
     void HandlePlayEnd();
 
+    /**
+     * @brief Initialize the JPEG decoder for the specified render mode.
+     * @param mode  Render mode determines pixel format (BE for LCD, LE for LVGL)
+     * @return true on success
+     */
+    bool InitJpegDecoder(VideoRenderMode mode);
+
+    /** Clean up JPEG decoder resources */
+    void DeinitJpegDecoder();
+
     /** Decode MJPEG data to RGB565 into the back-buffer */
     bool DecodeMjpegFrame(const uint8_t* jpeg_data, size_t jpeg_size,
                           uint16_t width, uint16_t height);
+
+    /** Log FPS statistics periodically */
+    void LogFpsStats();
 
     /** Draw the current back-buffer to LCD panel */
     void DrawFrameToLcd(uint16_t width, uint16_t height);
@@ -430,6 +458,13 @@ private:
     /* ---- Callbacks ---- */
     VideoStateCallback            state_callback_;
     VideoEndCallback              end_callback_;
+    VideoFpsCallback              fps_callback_;
+    VideoFrameCallback            frame_callback_;
+    VideoAudioCallback            audio_callback_;
+
+    /* ---- FPS tracking ---- */
+    int64_t                       fps_last_log_time_us_ = 0;
+    uint32_t                      fps_frame_count_ = 0;
 };
 
 #endif // VIDEO_PLAYER_H

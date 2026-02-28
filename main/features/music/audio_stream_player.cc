@@ -8,9 +8,7 @@
 
 #include "audio_stream_player.h"
 #include "board.h"
-#include "application.h"
-#include "protocols/protocol.h"
-#include "display/display.h"
+#include "audio/audio_codec.h"
 
 #include <esp_log.h>
 #include <esp_heap_caps.h>
@@ -52,10 +50,7 @@ AudioStreamPlayer::AudioStreamPlayer()
       input_buffer_(nullptr),
       input_bytes_left_(0),
       current_play_time_ms_(0),
-      total_frames_decoded_(0),
-      fft_started_(false),
-      info_displayed_(false),
-      fft_pcm_ptr_(nullptr)
+      total_frames_decoded_(0)
 {
     buffer_mutex_     = xSemaphoreCreateMutex();
     buffer_data_sem_  = xSemaphoreCreateCounting(128, 0);
@@ -90,20 +85,10 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
     /* Stop previous session */
     StopStream();
 
-    /* Reset display */
-    {
-        auto display = Board::GetInstance().GetDisplay();
-        if (display) {
-            display->StopFFT();
-            display->ReleaseAudioBuffFFT();
-            display->SetMusicInfo(nullptr);
-        }
-    }
+    SetPlayerState(AudioPlayerState::Loading);
 
     stream_url_           = source;
     decoder_type_         = type;
-    fft_started_          = false;
-    info_displayed_       = false;
     is_paused_            = false;
     current_play_time_ms_ = 0;
     total_frames_decoded_ = 0;
@@ -153,6 +138,8 @@ bool AudioStreamPlayer::StopStream()
     ESP_LOGI(TAG, "StopStream: src=%d, play=%d",
              is_source_active_.load(), is_playing_.load());
 
+    SetPlayerState(AudioPlayerState::Stopping);
+
     is_source_active_ = false;
     is_playing_       = false;
     is_paused_        = false;
@@ -187,23 +174,17 @@ bool AudioStreamPlayer::StopStream()
         play_task_handle_ = nullptr;
     }
 
-    /* Clear display */
-    auto display = Board::GetInstance().GetDisplay();
-    if (display) {
-        display->SetMusicInfo("");
-        if (display_mode_ == DISPLAY_MODE_SPECTRUM) {
-            display->StopFFT();
-            display->ReleaseAudioBuffFFT();
-        }
-    }
-
-    fft_pcm_ptr_ = nullptr;
-    fft_started_ = false;
-
     ClearAudioBuffer();
     CleanupDecoder();
     ResetSampleRate();
     OnPlaybackFinished();
+
+    /* Notify end callback */
+    if (end_callback_) {
+        end_callback_(stream_url_);
+    }
+
+    SetPlayerState(AudioPlayerState::Idle);
 
     ESP_LOGI(TAG, "Stream stopped");
     return true;
@@ -218,6 +199,7 @@ void AudioStreamPlayer::PauseStream()
     if (!is_playing_ || is_paused_) return;
     ESP_LOGI(TAG, "Pausing stream");
     is_paused_ = true;
+    SetPlayerState(AudioPlayerState::Paused);
     OnPauseStateChanged(true);
 }
 
@@ -227,6 +209,7 @@ void AudioStreamPlayer::ResumeStream()
     ESP_LOGI(TAG, "Resuming stream");
     is_paused_ = false;
     if (pause_sem_) xSemaphoreGive(pause_sem_);
+    SetPlayerState(AudioPlayerState::Playing);
     OnPauseStateChanged(false);
 }
 
@@ -406,7 +389,9 @@ void AudioStreamPlayer::PlayLoop()
     current_play_time_ms_ = 0;
     total_frames_decoded_ = 0;
 
-    EnterIdleDeviceState();
+    // NOTE: Device idle transition is now handled externally by
+    // Application::EnsureIdleForMedia() before starting playback.
+    SetPlayerState(AudioPlayerState::Playing);
 
     auto codec = Board::GetInstance().GetAudioCodec();
     if (!codec) {
@@ -435,14 +420,6 @@ void AudioStreamPlayer::PlayLoop()
     bool was_playing = is_playing_.load();
     is_playing_ = false;
 
-    auto display = Board::GetInstance().GetDisplay();
-    if (display && display_mode_ == DISPLAY_MODE_SPECTRUM) {
-        display->SetMusicInfo("");
-        display->StopFFT();
-        display->ReleaseAudioBuffFFT();
-    }
-
-    fft_pcm_ptr_ = nullptr;
     CleanupDecoder();
 
     /* Notify subclass if playback ended naturally */
@@ -456,28 +433,8 @@ void AudioStreamPlayer::PlayLoop()
 }
 
 /* ================================================================== */
-/*  Common helpers: pause check, device state, FFT start              */
+/*  Common helpers: pause check                                       */
 /* ================================================================== */
-
-void AudioStreamPlayer::EnterIdleDeviceState()
-{
-    auto& app = Application::GetInstance();
-    DeviceState ds = app.GetDeviceState();
-    if (ds != kDeviceStateListening && ds != kDeviceStateSpeaking) {
-        return;
-    }
-
-    int counter = 0;
-    while (counter++ < 10) {
-        app.ToggleChatState();
-        vTaskDelay(pdMS_TO_TICKS(AUDIO_CHAT_TOGGLE_DELAY_MS));
-        ds = app.GetDeviceState();
-        if (ds == kDeviceStateIdle) {
-            ESP_LOGI(TAG, "Entered idle state");
-            break;
-        }
-    }
-}
 
 bool AudioStreamPlayer::HandlePause()
 {
@@ -489,21 +446,8 @@ bool AudioStreamPlayer::HandlePause()
     return true;
 }
 
-void AudioStreamPlayer::StartFFTOnce()
-{
-    if (fft_started_) return;
-    auto display = Board::GetInstance().GetDisplay();
-    if (display && display_mode_ == DISPLAY_MODE_SPECTRUM) {
-        vTaskDelay(pdMS_TO_TICKS(150));
-        display->StartFFT();
-        ESP_LOGI(TAG, "FFT started");
-    }
-    OnDisplayReady();
-    fft_started_ = true;
-}
-
 /* ================================================================== */
-/*  OutputPcmFrame -- mono downmix, volume amp, FFT, audio out        */
+/*  OutputPcmFrame -- mono downmix, volume amp, callbacks, audio out  */
 /* ================================================================== */
 
 void AudioStreamPlayer::OutputPcmFrame(int16_t* pcm_in, int total_samples,
@@ -534,25 +478,85 @@ void AudioStreamPlayer::OutputPcmFrame(int16_t* pcm_in, int total_samples,
         amp_buf[i] = (int16_t)s;
     }
 
-    /* Build audio packet */
-    AudioStreamPacket pkt;
-    pkt.sample_rate    = sample_rate;
-    pkt.frame_duration = frame_duration_ms > 0 ? frame_duration_ms : 60;
-    pkt.timestamp      = 0;
-
+    /* Notify FFT callback (handled externally by Application) */
     size_t pcm_bytes = final_count * sizeof(int16_t);
-    pkt.payload.resize(pcm_bytes);
-    memcpy(pkt.payload.data(), amp_buf.data(), pcm_bytes);
-
-    /* FFT feed */
-    auto display = Board::GetInstance().GetDisplay();
-    if (display && display_mode_ == DISPLAY_MODE_SPECTRUM) {
-        fft_pcm_ptr_ = display->MakeAudioBuffFFT(pcm_bytes);
-        display->FeedAudioDataFFT(amp_buf.data(), pcm_bytes);
+    if (fft_callback_) {
+        fft_callback_(amp_buf.data(), pcm_bytes);
     }
 
-    /* Send to audio output */
-    Application::GetInstance().AddAudioData(std::move(pkt));
+    /* Notify PCM callback for custom processing */
+    if (pcm_callback_) {
+        pcm_callback_(amp_buf.data(), final_count, 1, sample_rate);
+    }
+
+    /* Output audio through direct codec path */
+    if (audio_codec_) {
+        OutputPcmDirect(amp_buf.data(), final_count, 1, sample_rate);
+    } else {
+        ESP_LOGW(TAG, "No audio codec set, PCM frame dropped");
+    }
+}
+
+/* ================================================================== */
+/*  OutputPcmDirect -- direct codec output (like VideoPlayer)         */
+/* ================================================================== */
+
+void AudioStreamPlayer::OutputPcmDirect(int16_t* pcm_in, int total_samples,
+                                         int channels, int sample_rate)
+{
+    if (!audio_codec_ || !pcm_in || total_samples == 0) return;
+
+    /* Ensure codec output is enabled */
+    if (!audio_codec_->output_enabled()) {
+        audio_codec_->EnableOutput(true);
+    }
+
+    /* Set sample rate if different from current codec rate */
+    if (audio_codec_->output_sample_rate() != sample_rate && sample_rate > 0) {
+        ESP_LOGI(TAG, "Setting codec sample rate: %d Hz", sample_rate);
+        audio_codec_->SetOutputSampleRate(sample_rate);
+    }
+
+    int codec_channels = audio_codec_->output_channels();
+    std::vector<int16_t> audio_out;
+
+    if (channels == 1 && codec_channels >= 2) {
+        /* Mono → Stereo: duplicate each sample */
+        audio_out.resize(total_samples * 2);
+        for (int i = 0; i < total_samples; i++) {
+            audio_out[i * 2]     = pcm_in[i];
+            audio_out[i * 2 + 1] = pcm_in[i];
+        }
+    } else if (channels == 2 && codec_channels == 1) {
+        /* Stereo → Mono: average channels */
+        int frames = total_samples / 2;
+        audio_out.resize(frames);
+        for (int i = 0; i < frames; i++) {
+            audio_out[i] = (int16_t)(((int32_t)pcm_in[i * 2] + pcm_in[i * 2 + 1]) / 2);
+        }
+    } else {
+        /* Same channel count: pass through */
+        audio_out.assign(pcm_in, pcm_in + total_samples);
+    }
+
+    /* Blocking write to I2S DMA via AudioCodec */
+    audio_codec_->OutputData(audio_out);
+}
+
+/* ================================================================== */
+/*  Player state management                                           */
+/* ================================================================== */
+
+void AudioStreamPlayer::SetPlayerState(AudioPlayerState new_state)
+{
+    AudioPlayerState old_state = player_state_.exchange(new_state);
+    if (old_state != new_state) {
+        ESP_LOGD(TAG, "AudioPlayerState: %d -> %d",
+                 static_cast<int>(old_state), static_cast<int>(new_state));
+        if (state_callback_) {
+            state_callback_(old_state, new_state);
+        }
+    }
 }
 
 /* ================================================================== */
@@ -590,7 +594,6 @@ void AudioStreamPlayer::PlayLoopCompressed()
 
     while (is_playing_) {
         if (!HandlePause()) break;
-        StartFFTOnce();
 
         /* Fill input buffer from audio buffer */
         if (input_bytes_left_ < (AUDIO_DEC_INPUT_BUF_SIZE / 2)) {
@@ -778,7 +781,6 @@ void AudioStreamPlayer::PlayLoopWav()
 
     while (is_playing_) {
         if (!HandlePause()) break;
-        StartFFTOnce();
 
         /* Get chunk from buffer */
         StreamAudioChunk chunk;

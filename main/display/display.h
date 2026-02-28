@@ -61,6 +61,18 @@ public:
     virtual int16_t* MakeAudioBuffFFT(size_t sample_count) { return nullptr; };
     virtual void ReleaseAudioBuffFFT(int16_t* buffer = nullptr) {};
 
+    /**
+     * @brief Show or hide the media overlay on the main UI.
+     *
+     * When active, hides the main emotion/chat UI (emoji, chat message,
+     * idle card) to make room for media content (FFT spectrum, video
+     * canvas, etc.).  When deactivated, the original UI is restored.
+     *
+     * @param active  true = media overlay is active (hide main UI),
+     *                false = restore main UI
+     */
+    virtual void SetMediaOverlayActive(bool active) {}
+
     // For QR code display
     virtual void ClearQRCode() {}
     virtual bool QRCodeIsSupported() { return false; }

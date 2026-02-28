@@ -199,6 +199,41 @@ void LcdDisplay::HideIdleCard() {
 #endif
 // --- [DienBien Mod]- END KHỞI TẠO MÀN HÌNH THỜI TIẾT----
 
+/* ------------------------------------------------------------------
+ * SetMediaOverlayActive — centralized show/hide of main UI widgets
+ *
+ * When media content (FFT spectrum, video canvas, etc.) is active,
+ * the emotion/chat widgets must be hidden so they don't overlap.
+ * When deactivated, the original UI elements are restored.
+ * ------------------------------------------------------------------ */
+void LcdDisplay::SetMediaOverlayActive(bool active) {
+    DisplayLockGuard lock(this);
+
+    if (active == media_overlay_active_) return;
+    media_overlay_active_ = active;
+
+    if (active) {
+        // Hide main emotion / chat widgets for media playback
+        if (emoji_label_) lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+        if (emoji_image_) lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
+        if (weather_ui_) weather_ui_->HideIdleCard();
+        if (container_) lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
+#endif
+        ESP_LOGI(TAG, "Media overlay active: main UI hidden");
+    } else {
+        // Restore main emotion / chat widgets
+        if (emoji_label_) lv_obj_clear_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+        if (emoji_image_) lv_obj_clear_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
+        if (container_ && lv_obj_has_flag(container_, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_remove_flag(container_, LV_OBJ_FLAG_HIDDEN);
+        }
+#endif
+        ESP_LOGI(TAG, "Media overlay inactive: main UI restored");
+    }
+}
+
 LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width, int height)
     : panel_io_(panel_io), panel_(panel) {
     width_ = width;
@@ -1564,9 +1599,8 @@ void LcdDisplay::StopFFT() {
     if (music_next_line_)     lv_obj_add_flag(music_next_line_, LV_OBJ_FLAG_HIDDEN);
 
 	
-	// Hiện lại emoji khi thoát giao diện nhạc
-    if (emoji_label_) lv_obj_clear_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
-    if (emoji_image_) lv_obj_clear_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+    // Restore main UI (emoji, idle card, etc.) via centralized API
+    SetMediaOverlayActive(false);
     
     ESP_LOGI(TAG, "FFT display stopped, original UI restored");
 }
@@ -1584,13 +1618,10 @@ void LcdDisplay::periodicUpdateTask() {
         create_canvas(status_h);
 
         if (canvas_) {
-            // MỌI GỌI LVGL PHẢI DƯỚI LOCK
+            // Hide main UI for media overlay, then build music UI
+            SetMediaOverlayActive(true);
             {
                 DisplayLockGuard lock(this);
-
-				// Ẩn emoji khi chuyển sang giao diện phát nhạc (ẩn cả label và icon)
-				if (emoji_label_) lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
-				if (emoji_image_) lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
 
                 // Clear nền
                 lv_canvas_fill_bg(canvas_, lv_color_black(), LV_OPA_COVER);

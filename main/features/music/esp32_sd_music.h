@@ -137,7 +137,6 @@ public:
     // ============================================================
     PlayerState getState() const;
     TrackProgress updateProgress() const;
-    int16_t* getFFTData() const;
 
     int64_t getDurationMs() const;
     int64_t getCurrentPositionMs() const;

@@ -101,6 +101,9 @@ protected:
     // Qr code handling methods
     bool qr_code_displayed_ = false;
 
+    // Media overlay state (true = emoji/chat hidden for media content)
+    bool media_overlay_active_ = false;
+
     // Rotate and offset settings
     int rotation_degree_ = 0;
     void SetRotationAndOffset(lv_display_rotation_t rotation, int offset_x, int offset_y);
@@ -126,6 +129,9 @@ public:
     virtual void FeedAudioDataFFT(int16_t* data, size_t sample_count) override;
     virtual int16_t* MakeAudioBuffFFT(size_t sample_count) override;
     virtual void ReleaseAudioBuffFFT(int16_t* buffer = nullptr) override;
+
+    /** Show/hide the media overlay (hides emoji + chat for FFT/video). */
+    virtual void SetMediaOverlayActive(bool active) override;
 
     // QR code display methods
     virtual void DisplayQRCode(const uint8_t* qrcode, const char* text = nullptr) override;

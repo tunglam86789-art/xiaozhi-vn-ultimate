@@ -27,7 +27,6 @@ public:
     // Buffer status
     virtual size_t GetBufferSize() const = 0;
     virtual bool IsDownloading() const = 0;
-    virtual int16_t* GetAudioData() = 0;
 };
 
 #endif // RADIO_H

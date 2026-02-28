@@ -15,7 +15,6 @@ public:
     virtual bool StopStreaming() = 0;  // Stop streaming playback
     virtual size_t GetBufferSize() const = 0;
     virtual bool IsDownloading() const = 0;
-    virtual int16_t* GetAudioData() = 0;
     virtual bool IsPlaying() const { return false; }
 };
 

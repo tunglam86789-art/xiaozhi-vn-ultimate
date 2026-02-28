@@ -57,7 +57,7 @@ VideoPlayer::~VideoPlayer() {
 bool VideoPlayer::Initialize(esp_lcd_panel_handle_t lcd_panel,
                              uint16_t lcd_width, uint16_t lcd_height,
                              AudioCodec* codec, SdCard* sd_card,
-                             Display* display) {
+                             Display* display, VideoRenderMode mode) {
     if (initialized_.load()) {
         ESP_LOGW(TAG, "Already initialized");
         return true;
@@ -74,7 +74,7 @@ bool VideoPlayer::Initialize(esp_lcd_panel_handle_t lcd_panel,
     lcd_height_ = lcd_height;
     audio_codec_ = codec;
     sd_card_    = sd_card;
-
+    render_mode_ = mode;
     /* Store mount point for path construction */
     mount_point_ = sd_card_->GetMountPoint();
     display_ = display;
@@ -108,32 +108,15 @@ bool VideoPlayer::Initialize(esp_lcd_panel_handle_t lcd_panel,
     ESP_LOGI(TAG, "MJPEG buffers allocated: 2 x %d bytes in PSRAM", VIDEO_AVI_BUFFER_SIZE);
 
     /* ---- Initialize JPEG decoder (software, MJPEG → RGB565) ---- */
-    jpeg_dec_config_t jpeg_cfg = {
-        .output_type  = JPEG_PIXEL_FORMAT_RGB565_LE,
-        .scale        = {.width = 0, .height = 0},
-        .clipper      = {.width = 0, .height = 0},
-        .rotate       = JPEG_ROTATE_0D,
-        .block_enable = false,
-    };
-
-    jpeg_error_t jerr = jpeg_dec_open(&jpeg_cfg, &jpeg_dec_);
-    if (jerr != JPEG_ERR_OK) {
-        ESP_LOGE(TAG, "Failed to open JPEG decoder: %d", jerr);
+    if (!InitJpegDecoder(mode)) {
+        ESP_LOGE(TAG, "Failed to initialize JPEG decoder");
         Deinitialize();
         return false;
     }
 
-    /* Allocate JPEG I/O and header structs in PSRAM */
-    jpeg_io_ = static_cast<jpeg_dec_io_t*>(
-        heap_caps_calloc(1, sizeof(jpeg_dec_io_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    jpeg_hdr_ = static_cast<jpeg_dec_header_info_t*>(
-        heap_caps_aligned_alloc(16, sizeof(jpeg_dec_header_info_t),
-                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-
-    if (!jpeg_io_ || !jpeg_hdr_) {
-        ESP_LOGE(TAG, "Failed to allocate JPEG I/O structs");
-        Deinitialize();
-        return false;
+    /* ---- Create LVGL canvas if using canvas render mode ---- */
+    if (mode == VideoRenderMode::LvglCanvas) {
+        CreateVideoCanvas();
     }
 
     /* ---- Create synchronization primitives for render task ---- */
@@ -194,7 +177,8 @@ void VideoPlayer::Deinitialize() {
     /* Destroy LVGL canvas */
     DestroyVideoCanvas();
 
-    /* Free render sync primitives */
+    /* Cleanup JPEG decoder */
+    DeinitJpegDecoder();
     if (render_sem_) {
         vSemaphoreDelete(render_sem_);
         render_sem_ = nullptr;
@@ -212,20 +196,6 @@ void VideoPlayer::Deinitialize() {
     if (decode_mjpeg_buf_) {
         heap_caps_free(decode_mjpeg_buf_);
         decode_mjpeg_buf_ = nullptr;
-    }
-
-    /* Free JPEG decoder */
-    if (jpeg_dec_) {
-        jpeg_dec_close(jpeg_dec_);
-        jpeg_dec_ = nullptr;
-    }
-    if (jpeg_io_) {
-        heap_caps_free(jpeg_io_);
-        jpeg_io_ = nullptr;
-    }
-    if (jpeg_hdr_) {
-        heap_caps_free(jpeg_hdr_);
-        jpeg_hdr_ = nullptr;
     }
 
     /* Free frame buffers */
@@ -346,6 +316,11 @@ void VideoPlayer::Stop() {
     stop_requested_.store(false);
     paused_.store(false);
     current_file_path_.clear();
+
+    /* Reset FPS tracking */
+    fps_last_log_time_us_ = 0;
+    fps_frame_count_ = 0;
+
     SetState(VideoPlayerState::Idle);
 
     ESP_LOGI(TAG, "Stopped");
@@ -534,6 +509,12 @@ void VideoPlayer::HandleAudioFrame(frame_data_t* data) {
     OnAudioFrameReady(reinterpret_cast<int16_t*>(data->data),
                       samples, data->audio_info.channel);
 
+    /* Notify external audio callback */
+    if (audio_callback_) {
+        audio_callback_(reinterpret_cast<int16_t*>(data->data),
+                        samples, data->audio_info.channel);
+    }
+
     /* Output PCM to speaker */
     OutputAudioPcm(data->data, data->data_bytes,
                    data->audio_info.channel, data->audio_info.bits_per_sample);
@@ -589,6 +570,111 @@ void VideoPlayer::HandlePlayEnd() {
     if (end_callback_) {
         end_callback_(ended_path);
     }
+}
+
+/* ================================================================== */
+/*  JPEG decoder lifecycle (per-mode initialization)                  */
+/* ================================================================== */
+
+bool VideoPlayer::InitJpegDecoder(VideoRenderMode mode) {
+    /* Clean up existing decoder first */
+    DeinitJpegDecoder();
+
+    jpeg_dec_config_t jpeg_cfg = {
+        .output_type  = JPEG_PIXEL_FORMAT_RGB565_LE,
+        .scale        = {.width = 0, .height = 0},
+        .clipper      = {.width = 0, .height = 0},
+        .rotate       = JPEG_ROTATE_0D,
+        .block_enable = false,
+    };
+
+    /* Select pixel format based on render mode:
+     * DirectLcd:  RGB565 big-endian (native for esp_lcd panel write)
+     * LvglCanvas: RGB565 little-endian (native for lv_color_t / LVGL) */
+    if (mode == VideoRenderMode::DirectLcd) {
+        jpeg_cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_BE;
+        ESP_LOGI(TAG, "JPEG decoder: RGB565_BE (DirectLcd mode)");
+    } else {
+        jpeg_cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+        ESP_LOGI(TAG, "JPEG decoder: RGB565_LE (LvglCanvas mode)");
+    }
+
+    jpeg_error_t jerr = jpeg_dec_open(&jpeg_cfg, &jpeg_dec_);
+    if (jerr != JPEG_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to open JPEG decoder: %d", jerr);
+        return false;
+    }
+
+    /* Allocate JPEG I/O and header structs in PSRAM */
+    jpeg_io_ = static_cast<jpeg_dec_io_t*>(
+        heap_caps_calloc(1, sizeof(jpeg_dec_io_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    jpeg_hdr_ = static_cast<jpeg_dec_header_info_t*>(
+        heap_caps_aligned_alloc(16, sizeof(jpeg_dec_header_info_t),
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+
+    if (!jpeg_io_ || !jpeg_hdr_) {
+        ESP_LOGE(TAG, "Failed to allocate JPEG I/O structs");
+        DeinitJpegDecoder();
+        return false;
+    }
+
+    ESP_LOGI(TAG, "JPEG decoder initialized for %s mode",
+             mode == VideoRenderMode::DirectLcd ? "DirectLcd" : "LvglCanvas");
+    return true;
+}
+
+void VideoPlayer::DeinitJpegDecoder() {
+    if (jpeg_dec_) {
+        jpeg_dec_close(jpeg_dec_);
+        jpeg_dec_ = nullptr;
+    }
+    if (jpeg_io_) {
+        heap_caps_free(jpeg_io_);
+        jpeg_io_ = nullptr;
+    }
+    if (jpeg_hdr_) {
+        heap_caps_free(jpeg_hdr_);
+        jpeg_hdr_ = nullptr;
+    }
+}
+
+/* ================================================================== */
+/*  FPS logging                                                       */
+/* ================================================================== */
+
+void VideoPlayer::LogFpsStats() {
+#if VIDEO_FPS_LOG_INTERVAL_SEC > 0
+    int64_t now_us = esp_timer_get_time();
+
+    /* Initialize on first call */
+    if (fps_last_log_time_us_ == 0) {
+        fps_last_log_time_us_ = now_us;
+        fps_frame_count_ = 0;
+        return;
+    }
+
+    fps_frame_count_++;
+    float elapsed_sec = static_cast<float>(now_us - fps_last_log_time_us_) / 1000000.0f;
+
+    if (elapsed_sec >= VIDEO_FPS_LOG_INTERVAL_SEC) {
+        float fps = static_cast<float>(fps_frame_count_) / elapsed_sec;
+
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        ESP_LOGI(TAG, "[FPS] %.1f fps | decode=%.1fms draw=%.1fms | %lux%lu | decoded=%lu dropped=%lu",
+                 fps, stats_.avg_decode_ms, stats_.avg_draw_ms,
+                 (unsigned long)stats_.video_width, (unsigned long)stats_.video_height,
+                 (unsigned long)stats_.frames_decoded, (unsigned long)stats_.frames_dropped);
+
+        /* Notify external FPS callback */
+        if (fps_callback_) {
+            fps_callback_(fps, stats_.avg_decode_ms, stats_.avg_draw_ms);
+        }
+
+        /* Reset counters */
+        fps_last_log_time_us_ = now_us;
+        fps_frame_count_ = 0;
+    }
+#endif
 }
 
 /* ================================================================== */
@@ -798,6 +884,16 @@ void VideoPlayer::SetRenderMode(VideoRenderMode mode) {
     VideoRenderMode old_mode = render_mode_;
     render_mode_ = mode;
 
+    /* Re-initialize JPEG decoder for the new pixel format */
+    if (initialized_.load()) {
+        if (!InitJpegDecoder(mode)) {
+            ESP_LOGE(TAG, "Failed to reinit JPEG decoder for new mode, reverting");
+            render_mode_ = old_mode;
+            InitJpegDecoder(old_mode);
+            return;
+        }
+    }
+
     if (mode == VideoRenderMode::LvglCanvas) {
         CreateVideoCanvas();
     } else if (old_mode == VideoRenderMode::LvglCanvas) {
@@ -858,6 +954,11 @@ void VideoPlayer::RenderTaskLoop() {
             /* Hook for subclass customization */
             OnVideoFrameReady(frame_buf_[back_buf_index_], vw, vh);
 
+            /* Notify external frame callback */
+            if (frame_callback_) {
+                frame_callback_(frame_buf_[back_buf_index_], vw, vh);
+            }
+
             /* Render based on current mode */
             if (render_mode_ == VideoRenderMode::LvglCanvas) {
                 DrawFrameToCanvas(vw, vh);
@@ -880,6 +981,9 @@ void VideoPlayer::RenderTaskLoop() {
                 stats_.avg_decode_ms = stats_.avg_decode_ms * ((n - 1.0f) / n)
                                      + decode_ms / n;
             }
+
+            /* Periodic FPS logging */
+            LogFpsStats();
         } else {
             std::lock_guard<std::mutex> lock(stats_mutex_);
             stats_.frames_dropped++;
@@ -976,9 +1080,9 @@ void VideoPlayer::SetState(VideoPlayerState new_state) {
         /* Virtual hook */
         OnPlaybackStateChanged(old_state, new_state);
 
-        /* User callback */
+        /* User callback (with both old and new state) */
         if (state_callback_) {
-            state_callback_(new_state);
+            state_callback_(old_state, new_state);
         }
     }
 }

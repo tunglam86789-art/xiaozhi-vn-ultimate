@@ -12,7 +12,6 @@
 #include "audio/audio_codec.h"
 #include "application.h"
 #include "protocols/protocol.h"
-#include "display/display.h"
 #include "settings.h"
 
 #include <esp_log.h>
@@ -153,9 +152,12 @@ Esp32Music::~Esp32Music()
     ESP_LOGI(TAG, "Esp32Music destroyed");
 }
 
-void Esp32Music::Initialize()
+void Esp32Music::Initialize(AudioCodec* codec)
 {
-    ESP_LOGI(TAG, "Music player initialised");
+    if (codec) {
+        SetAudioCodec(codec);
+    }
+    ESP_LOGI(TAG, "Music player initialised (codec=%s)", codec ? "direct" : "app-pipeline");
 }
 
 /* ================================================================== */
@@ -222,18 +224,6 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
     if (cJSON_IsString(j_title))  title_name_  = j_title->valuestring;
 
     ESP_LOGI(TAG, "Song: %s | Artist: %s", title_name_.c_str(), artist_name_.c_str());
-
-    /* Show early info on display */
-    {
-        auto display = Board::GetInstance().GetDisplay();
-        if (display) {
-            char buf[256];
-            snprintf(buf, sizeof(buf), "ONLINE 《%s》\n%s • Đang phát...",
-                     title_name_.empty() ? song_name.c_str() : title_name_.c_str(),
-                     artist_name_.empty() ? "Unknown Artist" : artist_name_.c_str());
-            display->SetMusicInfo(buf);
-        }
-    }
 
     /* Validate audio URL */
     if (!cJSON_IsString(j_audio) || !j_audio->valuestring || strlen(j_audio->valuestring) == 0) {
@@ -335,17 +325,7 @@ void Esp32Music::OnStreamInfoReady(int sample_rate, int bits_per_sample, int cha
 {
     if (full_info_displayed_) return;
 
-    auto display = Board::GetInstance().GetDisplay();
-    if (display) {
-        char buf[256];
-        const char* ch_str = (channels == 2) ? "Stereo" : "Mono";
-        snprintf(buf, sizeof(buf),
-             "ONLINE 《%s》\n%s • %d Hz | %s",
-             title_name_.empty() ? current_song_name_.c_str() : title_name_.c_str(),
-             artist_name_.empty() ? "Unknown Artist" : artist_name_.c_str(),
-             sample_rate, ch_str);
-        display->SetMusicInfo(buf);
-    }
+    ESP_LOGI(TAG, "Stream info: %d Hz, %d bit, %d ch", sample_rate, bits_per_sample, channels);
     full_info_displayed_ = true;
 }
 
@@ -363,19 +343,8 @@ void Esp32Music::OnPlaybackFinished()
 
 void Esp32Music::OnDisplayReady()
 {
-    /* Refresh song info after FFT canvas is created */
-    auto display = Board::GetInstance().GetDisplay();
-    if (display && !current_song_name_.empty()) {
-        char buf[256];
-        snprintf(buf, sizeof(buf),
-             // cSpell:disable
-             "ONLINE 《%s》\n%s • Đang phát...",
-             // cSpell:enable
-             title_name_.empty() ? current_song_name_.c_str() : title_name_.c_str(),
-             artist_name_.empty() ? "Unknown Artist" : artist_name_.c_str());
-        display->SetMusicInfo(buf);
-        ESP_LOGI(TAG, "Refreshed song info after canvas");
-    }
+    /* Display is now handled externally via Application callbacks */
+    ESP_LOGD(TAG, "Display ready callback");
 }
 
 /* ================================================================== */
