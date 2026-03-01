@@ -588,7 +588,6 @@ void VideoPlayer::HandlePlayEnd() {
         audio_codec_->SetOutputSampleRate(-1);
     }
 
-    SetState(VideoPlayerState::Idle);
     current_file_path_.clear();
 
     /* Log final stats */
@@ -600,7 +599,11 @@ void VideoPlayer::HandlePlayEnd() {
 
     /* Notify listener */
     if (end_callback_) {
-        end_callback_(ended_path);
+        if (!end_callback_(ended_path)) {
+            SetState(VideoPlayerState::Idle);
+        }
+    } else {
+        SetState(VideoPlayerState::Idle);
     }
 }
 

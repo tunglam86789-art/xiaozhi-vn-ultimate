@@ -163,7 +163,7 @@ enum class VideoRenderMode {
 using VideoStateCallback = std::function<void(VideoPlayerState old_state, VideoPlayerState new_state)>;
 
 /** Called when a video file finishes playing (natural end or error) */
-using VideoEndCallback = std::function<void(const std::string& file_path)>;
+using VideoEndCallback = std::function<bool(const std::string& file_path)>;
 
 using VideoClockSyncCallback = std::function<void(uint32_t rate, uint8_t bits, uint8_t channels)>;
 

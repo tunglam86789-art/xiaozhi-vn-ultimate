@@ -205,26 +205,27 @@ void McpFeatureTools::RegisterSdVideoTools(VideoPlayer* video) {
     if (!video) return;
 
     auto& mcp = McpServer::GetInstance();
-    mcp.AddTool("self.sdvideo.play_video",
-        "Play a video file from SD card. Use this tool when user requests to play a video file stored on SD card.\n"
-        "Args:\n"
-        "  `video_name`: The name of the video file to play (e.g., 'demo.avi'). You can also specify part of the name.\n"
-        "  `action`: Optional. If specified as 'shuffle', a random video from the playlist will be played. If specified as 'repeat', videos will play in a loop.\n"
-        "Return:\n"
-        "  Playback status information.",
+    /* ---------- 1) Playback control ---------- */
+    mcp.AddTool("self.sdvideo.playback",
+        "Điều khiển phát video từ THẺ NHỚ (SD card).\n"
+        "KHÔNG dùng tool này khi người dùng chỉ nói: 'phát video', 'mở video', "
+        "'play video', 'phát clip'.\n"
+        "\n"
+        "Tool này chỉ dùng khi người dùng nói rõ:\n"
+        "- video trong thẻ nhớ / video offline / phát video trong thẻ / SD card\n"
+        "\n"
+        "action = shuffle | repeat\n"
+        "Return: trạng thái điều khiển SD card.\n",
         PropertyList({
-            Property("video_name", kPropertyTypeString),
-            Property("action",  kPropertyTypeString)
+            Property("action", kPropertyTypeString),
         }),
-        [video](const PropertyList& properties) -> ReturnValue {
-            auto video_name = properties["video_name"].value<std::string>();
-            std::string action = properties["action"].value<std::string>();
-
+        [video](const PropertyList& props) -> ReturnValue {
+            std::string action = props["action"].value<std::string>();
+            video->SetEndCallback(nullptr); // Clear any existing callback
             if (video->GetPlaylist().empty()) {
                 ESP_LOGI(TAG, "[SdVideo] Scanning SD card for video files...");
                 return "{\"success\": false, \"message\": \"No video files found on SD card\"}";
             }
-
             ESP_LOGI(TAG, "[SdVideo] Setting mode: %s", action.c_str());
             if (action == "shuffle" || action == "repeat") {
                 if (action == "shuffle") {
@@ -235,18 +236,35 @@ void McpFeatureTools::RegisterSdVideoTools(VideoPlayer* video) {
                     return "{\"success\": true, \"message\": \"Shuffle: playing random video\"}";
                 } else if (action == "repeat") {
                     // Auto-play next video when one ends
-                    video->SetEndCallback([video](const std::string& /*finished_path*/) {
-                        if (!video->GetPlaylist().empty()) {
-                            video->Next(); // Loop through all videos in directory
-                        }
+                    video->SetEndCallback([video](const std::string& /*finished_path*/) -> bool {
+                        // Return true to auto-play next video, false to stop after one video
+                        return video->Next(); // Loop through all videos in directory
                     });
                     video->Next();
                 }
                 return "{\"success\": true, \"message\": \"Repeat mode enabled, playing next video\"}";
             }
+            return "{\"success\": false, \"message\": \"Unknown playback action\"}";
+        });
+
+    mcp.AddTool("self.sdvideo.play_video",
+        "Play a video file from SD card. Use this tool when user requests to play a video file stored on SD card.\n"
+        "Args:\n"
+        "  `video_name`: The name of the video file to play (e.g., 'demo.avi'). You can also specify part of the name.\n"
+        "Return:\n"
+        "  Playback status information.",
+        PropertyList({
+            Property("video_name", kPropertyTypeString)
+        }),
+        [video](const PropertyList& properties) -> ReturnValue {
+            auto video_name = properties["video_name"].value<std::string>();
+            video->SetEndCallback(nullptr); // Clear any existing callback
+            if (video->GetPlaylist().empty()) {
+                ESP_LOGI(TAG, "[SdVideo] Scanning SD card for video files...");
+                return "{\"success\": false, \"message\": \"No video files found on SD card\"}";
+            }
 
             // Search playlist for matching video name and play it
-            video->SetEndCallback(nullptr); // Clear any existing callback
             for (const auto& entry : video->GetPlaylist()) {
                 if (entry.path.find(video_name) != std::string::npos) {
                     ESP_LOGI(TAG, "[SdVideo] Playing: %s", entry.path.c_str());
