@@ -44,8 +44,8 @@ bool MusicVisualizer::Start(const VisualizerConfig& cfg, const std::string& musi
     scfg.canvas_y       = cfg.canvas_y;
     scfg.canvas_width   = cfg.canvas_width;
     scfg.canvas_height  = cfg.canvas_height;
-    scfg.lcd_width      = cfg.canvas_width;
-    scfg.lcd_height     = cfg.canvas_height;
+    scfg.lcd_width      = cfg.lcd_width;
+    scfg.lcd_height     = cfg.lcd_height;
     scfg.status_bar_h   = cfg.status_bar_h;
     scfg.bar_max_height = scfg.canvas_height / 2;
     scfg.fft_size       = cfg.fft_size;

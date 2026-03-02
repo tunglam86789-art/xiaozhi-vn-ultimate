@@ -181,12 +181,13 @@ void SpectrumRenderer::Invalidate() {
     if (!canvas_) return;
 
     // Only refresh the spectrum area (bottom portion of the canvas)
-    lv_area_t area;
-    area.x1 = 0;
-    area.y1 = config_.lcd_height - config_.GetBarMaxHeight();
-    area.x2 = config_.canvas_width - 1;
-    area.y2 = config_.lcd_height - 1;
-    lv_obj_invalidate_area(canvas_, &area);
+    lv_area_t lcd_area;
+    lcd_area.x1 = 0;
+    lcd_area.y1 = config_.lcd_height - config_.GetBarMaxHeight();
+    lcd_area.x2 = config_.canvas_width - 1;
+    lcd_area.y2 = config_.lcd_height - 1;
+    // Note: this api will allow LVGL update the canvas data to be visible on area of the screen (not area of the canvas).
+    lv_obj_invalidate_area(canvas_, &lcd_area);
 }
 
 // ---------------------------------------------------------------------------
