@@ -31,15 +31,6 @@ private:
 
 class Display {
 public:
-    /** Source type for detecting what media is currently playing. */
-    enum class DisplaySourceType {
-        NONE = 0,
-        SD_CARD,
-        ONLINE,
-        RADIO
-    };
-
-public:
     Display();
     virtual ~Display();
 
@@ -49,7 +40,6 @@ public:
     virtual void SetEmotion(const char* emotion);
     virtual void SetChatMessage(const char* role, const char* content);
     virtual void SetMusicInfo(const char* song_name);
-    virtual DisplaySourceType DetectSourceFromInfo() { return DisplaySourceType::NONE; }
     virtual void SetTheme(Theme* theme);
     virtual Theme* GetTheme() { return current_theme_; }
     virtual void UpdateStatusBar(bool update_all = false);

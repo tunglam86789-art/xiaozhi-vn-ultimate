@@ -32,6 +32,9 @@ struct SpectrumConfig {
     int canvas_y            = 0;     ///< Canvas Y position on screen (pixels)
     int canvas_width        = 320;   ///< Canvas width  (pixels)
     int canvas_height       = 240;   ///< Canvas height (pixels)
+    int lcd_width           = 320;   ///< LCD width (pixels) — for canvas positioning
+    int lcd_height          = 240;   ///< LCD height (pixels) — for canvas positioning
+    int status_bar_h        = 24;    ///< Status bar height (pixels) — for UI layout fallback
     int bar_max_height      = 0;     ///< Max bar height (0 = canvas_height / 2)
 
     // ---- Timing Parameters ----

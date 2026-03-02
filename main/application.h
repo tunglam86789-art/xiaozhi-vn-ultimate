@@ -21,6 +21,9 @@
 class AudioStreamPlayer;
 class VideoPlayer;
 
+// Forward declaration for MusicVisualizer (owned by Application)
+namespace music { class MusicVisualizer; }
+
 // --- Display Weather ---
 #include "display.h"
 #include "features/weather/weather_service.h"
@@ -79,6 +82,9 @@ public:
 	Esp32Radio* GetRadio() { return radio_; }
 	Esp32SdMusic* GetSdMusic() { return sd_music_; }
 	VideoPlayer* GetVideo() { return sd_video_; }
+
+    /** Get the music visualizer (owned by Application). */
+    music::MusicVisualizer* GetMusicVisualizer() { return music_visualizer_.get(); }
 
     /* ================================================================== */
     /*  Media Player APIs                                                 */
@@ -186,6 +192,9 @@ private:
     Esp32Radio* radio_ = nullptr;
     Esp32SdMusic* sd_music_ = nullptr;
     VideoPlayer* sd_video_ = nullptr;
+
+    // Music spectrum visualizer (owned by Application, not Display)
+    std::unique_ptr<music::MusicVisualizer> music_visualizer_;
 
     bool has_server_time_ = false;
     bool aborted_ = false;

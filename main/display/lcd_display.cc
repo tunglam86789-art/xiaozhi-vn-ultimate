@@ -8,7 +8,6 @@ Contributors: Xiaozhi AI-IoT Vietnam Team
 #include "lvgl_theme.h"
 #include "assets/lang_config.h"
 #include "features/weather/weather_model.h"
-#include "features/music/music_visualizer.h"
 #include "features/QRCode/qrcode_display.h"
 
 #include <vector>
@@ -200,7 +199,6 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     current_theme_ = LvglThemeManager::GetInstance().GetTheme(theme_name);
 
     // Create isolated feature components
-    music_visualizer_ = std::make_unique<music::MusicVisualizer>();
     qrcode_display_   = std::make_unique<qrcode::QRCodeDisplay>();
 
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
@@ -424,7 +422,6 @@ LcdDisplay::~LcdDisplay() {
     SetPreviewImage(nullptr);
 
     // Stop isolated components
-    music_visualizer_.reset();
     qrcode_display_.reset();
     
     // Clean up GIF controller
@@ -1147,21 +1144,13 @@ void LcdDisplay::SetEmotion(const char* emotion) {
 }
 
 // ===================================================================
-// Music info — thin delegation to MusicVisualizer
+// Music info — display in chat label (spectrum is managed by Application)
 // ===================================================================
 
 void LcdDisplay::SetMusicInfo(const char* song_name) {
-    // Delegate to music visualizer if running
-    if (music_visualizer_ && music_visualizer_->IsRunning()) {
-        DisplayLockGuard lock(this);
-        music_visualizer_->SetMusicInfo(song_name);
-        return;
-    }
-
 #if CONFIG_USE_WECHAT_MESSAGE_STYLE
     return;  // WeChat mode does not display song name
 #else
-    // Fallback: show song name in chat label (when no spectrum is active)
     DisplayLockGuard lock(this);
     if (chat_message_label_ == nullptr) return;
 
@@ -1173,19 +1162,6 @@ void LcdDisplay::SetMusicInfo(const char* song_name) {
         lv_label_set_text(chat_message_label_, "");
     }
 #endif
-}
-
-LcdDisplay::DisplaySourceType LcdDisplay::DetectSourceFromInfo() {
-    if (music_visualizer_) {
-        auto src = music_visualizer_->DetectSource();
-        switch (src) {
-            case music::SourceType::SD_CARD: return DisplaySourceType::SD_CARD;
-            case music::SourceType::ONLINE:  return DisplaySourceType::ONLINE;
-            case music::SourceType::RADIO:   return DisplaySourceType::RADIO;
-            default:                         return DisplaySourceType::NONE;
-        }
-    }
-    return DisplaySourceType::NONE;
 }
 
 void LcdDisplay::SetTheme(Theme* theme) {

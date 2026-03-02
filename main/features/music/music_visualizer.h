@@ -46,10 +46,21 @@ enum class SourceType {
 /**
  * @brief Configuration for the visualizer.
  */
+/**
+ * @brief Configuration for the visualizer canvas and FFT parameters.
+ *
+ * The caller specifies the exact canvas position and dimensions.
+ * This allows flexible layout control — the canvas can be smaller than
+ * the screen and placed at any (x, y) position by the caller.
+ */
 struct VisualizerConfig {
-    int screen_width      = 320;
-    int screen_height     = 240;
-    int status_bar_h      = 0;        ///< Height of status bar (canvas starts below)
+    int canvas_x          = 0;       ///< Canvas X position on screen (pixels)
+    int canvas_y          = 0;       ///< Canvas Y position on screen (pixels)
+    int canvas_width      = 320;     ///< Canvas width  (pixels)
+    int canvas_height     = 240;     ///< Canvas height (pixels)
+    int lcd_width         = 320;     ///< LCD width (pixels, for UI layout fallback)
+    int lcd_height        = 240;     ///< LCD height (pixels, for UI layout fallback)
+    int status_bar_h      = 24;      ///< Status bar height (pixels, for UI layout fallback)
     int fft_size          = 512;
     int bar_count         = 40;
     size_t audio_buf_size = 4608;    ///< PCM buffer size in bytes (must match pipeline)

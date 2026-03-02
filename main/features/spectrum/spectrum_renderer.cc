@@ -71,6 +71,11 @@ bool SpectrumRenderer::CreateCanvas(lv_obj_t* parent) {
     lv_canvas_set_buffer(canvas_, canvas_buffer_, w, h, LV_COLOR_FORMAT_RGB565);
     lv_obj_set_pos(canvas_, config_.canvas_x, config_.canvas_y);
     lv_obj_set_size(canvas_, w, h);
+
+    // FLOATING: bypass parent layout/padding/scroll so canvas is truly absolute-positioned
+    lv_obj_add_flag(canvas_, LV_OBJ_FLAG_FLOATING);
+    lv_obj_clear_flag(canvas_, LV_OBJ_FLAG_SCROLLABLE);
+
     lv_canvas_fill_bg(canvas_, lv_color_make(0, 0, 0), LV_OPA_COVER);
     lv_obj_move_foreground(canvas_);
 
@@ -175,11 +180,12 @@ void SpectrumRenderer::Render(const float* power_spectrum, int spectrum_size) {
 void SpectrumRenderer::Invalidate() {
     if (!canvas_) return;
 
+    // Only refresh the spectrum area (bottom portion of the canvas)
     lv_area_t area;
     area.x1 = 0;
-    area.y1 = config_.canvas_height - config_.GetBarMaxHeight();
+    area.y1 = config_.lcd_height - config_.GetBarMaxHeight();
     area.x2 = config_.canvas_width - 1;
-    area.y2 = config_.canvas_height - 1;
+    area.y2 = config_.lcd_height - 1;
     lv_obj_invalidate_area(canvas_, &area);
 }
 

@@ -38,12 +38,15 @@ bool MusicVisualizer::Start(const VisualizerConfig& cfg, const std::string& musi
     config_ = cfg;
     if (!music_info.empty()) music_info_ = music_info;
 
-    // Build spectrum config
+    // Build spectrum config from caller-provided canvas rect
     spectrum::SpectrumConfig scfg;
-    scfg.canvas_x       = 0;
-    scfg.canvas_y       = cfg.status_bar_h;
-    scfg.canvas_width   = cfg.screen_width;
-    scfg.canvas_height  = cfg.screen_height - cfg.status_bar_h;
+    scfg.canvas_x       = cfg.canvas_x;
+    scfg.canvas_y       = cfg.canvas_y;
+    scfg.canvas_width   = cfg.canvas_width;
+    scfg.canvas_height  = cfg.canvas_height;
+    scfg.lcd_width      = cfg.canvas_width;
+    scfg.lcd_height     = cfg.canvas_height;
+    scfg.status_bar_h   = cfg.status_bar_h;
     scfg.bar_max_height = scfg.canvas_height / 2;
     scfg.fft_size       = cfg.fft_size;
     scfg.bar_count      = cfg.bar_count;
@@ -75,7 +78,7 @@ bool MusicVisualizer::Start(const VisualizerConfig& cfg, const std::string& musi
         lvgl_port_unlock();
     }
 
-    ESP_LOGI(TAG, "Started (%dx%d)", cfg.screen_width, cfg.screen_height);
+    ESP_LOGI(TAG, "Started (%dx%d at %d,%d)", cfg.canvas_width, cfg.canvas_height, cfg.canvas_x, cfg.canvas_y);
     return true;
 }
 
@@ -141,7 +144,7 @@ void MusicVisualizer::SetMusicInfo(const char* info) {
         line1 = music_info_;
     }
 
-    int cw = spectrum_mgr_ ? spectrum_mgr_->GetConfig().canvas_width : config_.screen_width;
+    int cw = spectrum_mgr_ ? spectrum_mgr_->GetConfig().canvas_width : config_.canvas_width;
 
     if (music_title_label_ && lv_obj_is_valid(music_title_label_)) {
         lv_label_set_text(music_title_label_, line1.c_str());
@@ -419,7 +422,7 @@ void MusicVisualizer::UpdateMusicUI() {
         snprintf(st, sizeof(st), "%d kbps  •  %s", br, sd->getDurationString().c_str());
         lv_label_set_text(music_subinfo_label_, st);
         lv_label_set_long_mode(music_subinfo_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
-        int cw = spectrum_mgr_ ? spectrum_mgr_->GetConfig().canvas_width : config_.screen_width;
+        int cw = spectrum_mgr_ ? spectrum_mgr_->GetConfig().canvas_width : config_.canvas_width;
         lv_obj_set_width(music_subinfo_label_, cw - 40);
     }
 

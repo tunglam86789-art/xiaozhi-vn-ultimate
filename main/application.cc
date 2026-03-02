@@ -1316,39 +1316,38 @@ void Application::StopOtherMedia(MediaComponent except) {
 void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
     if (!player) return;
 
-    // Forward FFT PCM data to the MusicVisualizer (if LCD display has one)
-    player->SetFftCallback([](int16_t* pcm_data, size_t pcm_bytes) {
-        auto display = Board::GetInstance().GetDisplay();
-        auto* lcd = dynamic_cast<LcdDisplay*>(display);
-        if (lcd && lcd->GetMusicVisualizer()) {
-            lcd->GetMusicVisualizer()->FeedAudioData(pcm_data, pcm_bytes);
+    // Forward FFT PCM data to the MusicVisualizer (Application-owned)
+    player->SetFftCallback([this](int16_t* pcm_data, size_t pcm_bytes) {
+        if (music_visualizer_ && music_visualizer_->IsRunning()) {
+            music_visualizer_->FeedAudioData(pcm_data, pcm_bytes);
         }
     });
 
     player->SetPcmCallback([this](int16_t* pcm_data, int total_samples, int channels, int sample_rate) {
-        // This callback is called in the audio streaming thread, so we need to be careful about performance.
-        // We can use this callback to update the output timestamp for synchronization purposes.
         audio_service_.UpdateOutputTimestamp();
     });
 
     // Manage MusicVisualizer lifecycle via player state transitions
-    player->SetStateCallback([](AudioPlayerState old_state, AudioPlayerState new_state) {
+    player->SetStateCallback([this](AudioPlayerState old_state, AudioPlayerState new_state) {
         auto display = Board::GetInstance().GetDisplay();
         auto* lcd = dynamic_cast<LcdDisplay*>(display);
 
         if (new_state == AudioPlayerState::Playing) {
-            // When playback starts, ensure device is idle and ready for media
-            Application::GetInstance().EnsureIdleForMedia();
+            EnsureIdleForMedia();
 
-            if (lcd && lcd->GetMusicVisualizer()) {
-                auto* viz = lcd->GetMusicVisualizer();
+            if (lcd) {
+                // Lazily create the visualizer once
+                if (!music_visualizer_) {
+                    music_visualizer_ = std::make_unique<music::MusicVisualizer>();
+                }
+                auto* viz = music_visualizer_.get();
 
-                // Set up callbacks (safe to call multiple times)
+                // Wire callbacks (safe to call multiple times)
                 viz->SetOverlayCallback([lcd](bool active) {
                     lcd->SetMediaOverlayActive(active);
                 });
-                viz->SetSdPlayerGetter([]() -> Esp32SdMusic* {
-                    return Application::GetInstance().GetSdMusic();
+                viz->SetSdPlayerGetter([this]() -> Esp32SdMusic* {
+                    return GetSdMusic();
                 });
                 viz->SetFontProvider([lcd](const lv_font_t** text_font, const lv_font_t** icon_font) {
                     auto* theme = static_cast<LvglTheme*>(lcd->GetTheme());
@@ -1358,27 +1357,32 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
                     }
                 });
 
-                // Compute status bar height
+                // Compute status bar height for canvas positioning
                 int status_h = 0;
                 if (lvgl_port_lock(1000)) {
-                    auto* sb = lv_obj_get_child(lv_obj_get_child(lv_screen_active(), 0), 0);
+                    lv_obj_t* container = lv_obj_get_child(lv_screen_active(), 0);
+                    lv_obj_t* sb = container ? lv_obj_get_child(container, 0) : nullptr;
                     if (sb) status_h = lv_obj_get_height(sb);
                     lvgl_port_unlock();
                 }
 
                 music::VisualizerConfig cfg;
-                cfg.screen_width  = lcd->width();
-                cfg.screen_height = lcd->height();
-                cfg.status_bar_h  = status_h;
-
+                cfg.canvas_x      = 0;
+                cfg.canvas_y      = status_h;
+                cfg.canvas_width  = lcd->width();
+                cfg.canvas_height = lcd->height() - status_h;
+                cfg.lcd_height = lcd->height();
+                cfg.lcd_width = lcd->width();
+                cfg.status_bar_h = status_h;
                 cfg.audio_buf_size = AUDIO_PCM_OUT_BUF_SIZE;
+
                 viz->Start(cfg);
             }
         } else if (old_state == AudioPlayerState::Playing &&
                    (new_state == AudioPlayerState::Idle ||
                     new_state == AudioPlayerState::Stopping)) {
-            if (lcd && lcd->GetMusicVisualizer()) {
-                lcd->GetMusicVisualizer()->Stop();
+            if (music_visualizer_) {
+                music_visualizer_->Stop();
             }
             if (display) {
                 display->SetMusicInfo(nullptr);
