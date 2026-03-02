@@ -76,12 +76,12 @@ public:
     virtual void SetEmotion(const char* emotion) override;
     virtual void SetTheme(Theme* theme) override;
 
-    // FFT display methods
-    int16_t* MakeAudioBuffFFT(size_t sample_count) override;
-    void FeedAudioDataFFT(int16_t* data, size_t sample_count) override;
-    void ReleaseAudioBuffFFT(int16_t* buffer) override;
-    void StartFFT() override; // Hàm bắt đầu task FFT
-    void StopFFT() override;  // Hàm dừng task FFT
+    // FFT display methods (OledDisplay has its own FFT implementation)
+    int16_t* MakeAudioBuffFFT(size_t sample_count);
+    void FeedAudioDataFFT(int16_t* data, size_t sample_count);
+    void ReleaseAudioBuffFFT(int16_t* buffer);
+    void StartFFT();
+    void StopFFT();
 
     // QR code display methods
     void DisplayQRCode(const uint8_t* qrcode, const char* text = nullptr) override;

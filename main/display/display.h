@@ -31,6 +31,7 @@ private:
 
 class Display {
 public:
+    /** Source type for detecting what media is currently playing. */
     enum class DisplaySourceType {
         NONE = 0,
         SD_CARD,
@@ -53,13 +54,6 @@ public:
     virtual Theme* GetTheme() { return current_theme_; }
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
-
-    // For FFT display
-    virtual void StartFFT() {}
-    virtual void StopFFT() {}
-    virtual void FeedAudioDataFFT(int16_t* data, size_t sample_count) {};
-    virtual int16_t* MakeAudioBuffFFT(size_t sample_count) { return nullptr; };
-    virtual void ReleaseAudioBuffFFT(int16_t* buffer = nullptr) {};
 
     /**
      * @brief Show or hide the media overlay on the main UI.

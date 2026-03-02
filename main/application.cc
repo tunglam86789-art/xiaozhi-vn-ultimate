@@ -16,7 +16,10 @@
 #include "features/mcp_server_features.h"
 #include "features/music/audio_stream_player.h"
 #include "lcd_display.h"
+#include "lvgl_theme.h"
+#include "features/music/music_visualizer.h"
 #include "features/video/video_player.h"
+#include <esp_lvgl_port.h>
 #include <qrcode.h>
 #include <cmath>
 #include <cstring>
@@ -1077,6 +1080,7 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
             
             // Ensure audio output is enabled
             if (!codec->output_enabled()) {
+                ESP_LOGW(TAG, "%s Enabling audio output for music playback", __func__);
                 codec->EnableOutput(true);
             }
             
@@ -1312,11 +1316,12 @@ void Application::StopOtherMedia(MediaComponent except) {
 void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
     if (!player) return;
 
-    // Forward FFT PCM data to the display spectrum visualizer
+    // Forward FFT PCM data to the MusicVisualizer (if LCD display has one)
     player->SetFftCallback([](int16_t* pcm_data, size_t pcm_bytes) {
         auto display = Board::GetInstance().GetDisplay();
-        if (display) {
-            display->FeedAudioDataFFT(pcm_data, pcm_bytes);
+        auto* lcd = dynamic_cast<LcdDisplay*>(display);
+        if (lcd && lcd->GetMusicVisualizer()) {
+            lcd->GetMusicVisualizer()->FeedAudioData(pcm_data, pcm_bytes);
         }
     });
 
@@ -1326,28 +1331,62 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
         audio_service_.UpdateOutputTimestamp();
     });
 
-    // Manage FFT lifecycle via player state transitions
+    // Manage MusicVisualizer lifecycle via player state transitions
     player->SetStateCallback([](AudioPlayerState old_state, AudioPlayerState new_state) {
         auto display = Board::GetInstance().GetDisplay();
-        if (!display) return;
+        auto* lcd = dynamic_cast<LcdDisplay*>(display);
 
         if (new_state == AudioPlayerState::Playing) {
             // When playback starts, ensure device is idle and ready for media
             Application::GetInstance().EnsureIdleForMedia();
 
-            // Allocate FFT buffer and start spectrum rendering
-            display->MakeAudioBuffFFT(AUDIO_PCM_OUT_BUF_SIZE);
-            display->StartFFT();
+            if (lcd && lcd->GetMusicVisualizer()) {
+                auto* viz = lcd->GetMusicVisualizer();
+
+                // Set up callbacks (safe to call multiple times)
+                viz->SetOverlayCallback([lcd](bool active) {
+                    lcd->SetMediaOverlayActive(active);
+                });
+                viz->SetSdPlayerGetter([]() -> Esp32SdMusic* {
+                    return Application::GetInstance().GetSdMusic();
+                });
+                viz->SetFontProvider([lcd](const lv_font_t** text_font, const lv_font_t** icon_font) {
+                    auto* theme = static_cast<LvglTheme*>(lcd->GetTheme());
+                    if (theme) {
+                        *text_font = theme->text_font()->font();
+                        *icon_font = theme->large_icon_font()->font();
+                    }
+                });
+
+                // Compute status bar height
+                int status_h = 0;
+                if (lvgl_port_lock(1000)) {
+                    auto* sb = lv_obj_get_child(lv_obj_get_child(lv_screen_active(), 0), 0);
+                    if (sb) status_h = lv_obj_get_height(sb);
+                    lvgl_port_unlock();
+                }
+
+                music::VisualizerConfig cfg;
+                cfg.screen_width  = lcd->width();
+                cfg.screen_height = lcd->height();
+                cfg.status_bar_h  = status_h;
+
+                cfg.audio_buf_size = AUDIO_PCM_OUT_BUF_SIZE;
+                viz->Start(cfg);
+            }
         } else if (old_state == AudioPlayerState::Playing &&
                    (new_state == AudioPlayerState::Idle ||
                     new_state == AudioPlayerState::Stopping)) {
-            display->StopFFT();
-            display->ReleaseAudioBuffFFT();
-            display->SetMusicInfo(nullptr);
+            if (lcd && lcd->GetMusicVisualizer()) {
+                lcd->GetMusicVisualizer()->Stop();
+            }
+            if (display) {
+                display->SetMusicInfo(nullptr);
+            }
         }
     });
 
-    ESP_LOGI(TAG, "SetupAudioPlayerCallback: FFT + state callbacks installed");
+    ESP_LOGI(TAG, "SetupAudioPlayerCallback: MusicVisualizer callbacks installed");
 }
 
 /* ==================================================================

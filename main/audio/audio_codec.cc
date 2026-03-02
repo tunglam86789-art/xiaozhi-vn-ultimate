@@ -50,12 +50,12 @@ void AudioCodec::Start() {
 
     EnableInput(true);
     EnableOutput(true);
-    ESP_LOGI(TAG, "Audio codec started");
+    ESP_LOGW(TAG, "Audio codec starting with output sample rate: %d Hz, volume: %d", output_sample_rate_, output_volume_);
 }
 
 void AudioCodec::SetOutputVolume(int volume) {
     output_volume_ = volume;
-    ESP_LOGI(TAG, "Set output volume to %d", output_volume_);
+    ESP_LOGW(TAG, "Set output volume to %d", output_volume_);
     
     Settings settings("audio", true);
     settings.SetInt("output_volume", output_volume_);
@@ -71,7 +71,7 @@ void AudioCodec::EnableInput(bool enable) {
         return;
     }
     input_enabled_ = enable;
-    ESP_LOGI(TAG, "Set input enable to %s", enable ? "true" : "false");
+    ESP_LOGW(TAG, "Set input enable to %s", enable ? "true" : "false");
 }
 
 void AudioCodec::EnableOutput(bool enable) {
@@ -79,7 +79,7 @@ void AudioCodec::EnableOutput(bool enable) {
         return;
     }
     output_enabled_ = enable;
-    ESP_LOGI(TAG, "Set output enable to %s", enable ? "true" : "false");
+    ESP_LOGW(TAG, "Set output enable to %s", enable ? "true" : "false");
 }
 
 bool AudioCodec::SetOutputSampleRate(int sample_rate) {

@@ -557,7 +557,7 @@ void VideoPlayer::HandleAudioClock(uint32_t rate, uint32_t bits, uint32_t ch) {
         // Should be called after the clock sync callback to ensure audio output is enabled
         // and set the sample rate for synchronization.
         if (!audio_codec_->output_enabled()) {
-            ESP_LOGI(TAG, "Enabling audio output");
+            ESP_LOGW(TAG, "%s Enabling audio output for playback", __func__);
             audio_codec_->EnableOutput(true);
         }
         audio_codec_->SetOutputSampleRate(static_cast<int>(rate));

@@ -8,6 +8,8 @@ Contributors: Xiaozhi AI-IoT Vietnam Team
 #include "lvgl_theme.h"
 #include "assets/lang_config.h"
 #include "features/weather/weather_model.h"
+#include "features/music/music_visualizer.h"
+#include "features/QRCode/qrcode_display.h"
 
 #include <vector>
 #include <algorithm>
@@ -18,58 +20,13 @@ Contributors: Xiaozhi AI-IoT Vietnam Team
 #include <esp_psram.h>
 #include <string>
 #include <cstdint>
-#include <ctime>
 #include <cstring>
 #include <cmath>
-#include <math.h>
-#include <cctype>
-#include <qrcode.h>
 
 #include "board.h"
-#include "esp32_sd_music.h"
-#include "application.h"
 #include "lvgl.h"
 
-// ============================================================
-//  SD MUSIC PLAYER ACCESS (LVGL 9.x)
-// ============================================================
-
-static Esp32SdMusic* get_sd_player() {
-    return Application::GetInstance().GetSdMusic();
-}
-
-// ---------- UTILITY: Convert ms → mm:ss (hoặc hh:mm:ss) ----------
-static std::string ms_to_time_string(int64_t ms) {
-    if (ms < 0) ms = 0;
-	
-    int total_sec = ms / 1000;
-    int sec  = total_sec % 60;
-    int min  = (total_sec / 60) % 60;
-    int hour = total_sec / 3600;
-
-    char buf[32];
-    if (hour > 0)
-        snprintf(buf, sizeof(buf), "%02d:%02d:%02d", hour, min, sec);
-    else
-        snprintf(buf, sizeof(buf), "%02d:%02d", min, sec);
-
-    return std::string(buf);
-}
-
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 #define TAG "LcdDisplay"
-
-#define COLOR_BLACK   0x0000
-#define COLOR_RED     0xF800
-#define COLOR_GREEN   0x07E0
-#define COLOR_BLUE    0x001F
-#define COLOR_YELLOW  0xFFE0
-#define COLOR_CYAN    0x07FF
-#define COLOR_MAGENTA 0xF81F
-#define COLOR_WHITE   0xFFFF
 
 // Color definitions for dark theme
 #define DARK_BACKGROUND_COLOR       lv_color_hex(0x121212)     // Dark background
@@ -94,13 +51,6 @@ static std::string ms_to_time_string(int64_t ms) {
 #define LIGHT_LOW_BATTERY_COLOR      lv_color_black()           // Black for light mode
 
 //Declare theme color
-#define BAR_MAX_HEIGHT (240 / 2)
-#define BAR_COL_NUM  40
-#define LCD_FFT_SIZE 512
-static int current_heights[BAR_COL_NUM] = {0};
-static float avg_power_spectrum[LCD_FFT_SIZE/2]={-25.0f};
-static uint32_t last_flash_time[BAR_COL_NUM] = {0};
-static uint16_t falling_colors[BAR_COL_NUM] = {COLOR_BLUE};
 // Define dark theme colors
 const ThemeColors DARK_THEME = {
     .background = DARK_BACKGROUND_COLOR,
@@ -239,9 +189,7 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     width_ = width;
     height_ = height;
 
-    final_pcm_data_fft = nullptr;
     rotation_degree_ = 0;
-    bar_max_hight_ = height_ / 2; // BAR_MAX_HEIGHT
 
     // Initialize LCD themes
     InitializeLcdThemes();
@@ -250,6 +198,10 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     Settings settings("display", false);
     std::string theme_name = settings.GetString("theme", "light");
     current_theme_ = LvglThemeManager::GetInstance().GetTheme(theme_name);
+
+    // Create isolated feature components
+    music_visualizer_ = std::make_unique<music::MusicVisualizer>();
+    qrcode_display_   = std::make_unique<qrcode::QRCodeDisplay>();
 
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     weather_ui_ = std::make_unique<WeatherUI>();
@@ -267,12 +219,6 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
         .skip_unhandled_events = false,
     };
     esp_timer_create(&preview_timer_args, &preview_timer_);
-    
-     // Initialize variables for the falling effect
-    for (int i = 0; i < BAR_COL_NUM; i++) {
-        last_flash_time[i] = 0;
-        falling_colors[i] = COLOR_BLUE;
-    }
 }
 
 SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
@@ -355,25 +301,7 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
     if (offset_x != 0 || offset_y != 0) {
         lv_display_set_offset(display_, offset_x, offset_y);
     }
-	
-    fft_real = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
-    fft_imag = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
-    hanning_window_float = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
 
-    for (int i = 0; i < LCD_FFT_SIZE; i++) {
-        hanning_window_float[i] = 0.5 * (1.0 - cos(2.0 * M_PI * i / (LCD_FFT_SIZE - 1)));
-    }
-    
-    if(audio_data_==nullptr){
-        audio_data_=(int16_t*)heap_caps_malloc(sizeof(int16_t)*1152, MALLOC_CAP_SPIRAM);
-        memset(audio_data_,0,sizeof(int16_t)*1152);
-    }
-    if(frame_audio_data==nullptr){
-        frame_audio_data=(int16_t*)heap_caps_malloc(sizeof(int16_t)*1152, MALLOC_CAP_SPIRAM);
-        memset(frame_audio_data,0,sizeof(int16_t)*1152);
-    }
-    
-    ESP_LOGI(TAG,"Initialize fft_input, audio_data_, frame_audio_data, spectrum_data");
     SetupUI();
 }
 
@@ -495,34 +423,9 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
 LcdDisplay::~LcdDisplay() {
     SetPreviewImage(nullptr);
 
-    // Dừng task FFT trước
-    StopFFT();
-    
-    // Giải phóng bộ nhớ FFT
-    if (fft_real != nullptr) {
-        heap_caps_free(fft_real);
-        fft_real = nullptr;
-    }
-    if (fft_imag != nullptr) {
-        heap_caps_free(fft_imag);
-        fft_imag = nullptr;
-    }
-    if (hanning_window_float != nullptr) {
-        heap_caps_free(hanning_window_float);
-        hanning_window_float = nullptr;
-    }
-    if (audio_data_ != nullptr) {
-        heap_caps_free(audio_data_);
-        audio_data_ = nullptr;
-    }
-    if (frame_audio_data != nullptr) {
-        heap_caps_free(frame_audio_data);
-        frame_audio_data = nullptr;
-    }
-    if (final_pcm_data_fft != nullptr) {
-        heap_caps_free(final_pcm_data_fft);
-        final_pcm_data_fft = nullptr;
-    }
+    // Stop isolated components
+    music_visualizer_.reset();
+    qrcode_display_.reset();
     
     // Clean up GIF controller
     if (gif_controller_) {
@@ -1243,118 +1146,45 @@ void LcdDisplay::SetEmotion(const char* emotion) {
 #endif
 }
 
+// ===================================================================
+// Music info — thin delegation to MusicVisualizer
+// ===================================================================
+
 void LcdDisplay::SetMusicInfo(const char* song_name) {
-    // Lưu lại vào biến để DetectSourceFromInfo() dùng
-    if (song_name != nullptr)
-        music_info_ = song_name;
-    else
-        music_info_.clear();
-
-#if CONFIG_USE_WECHAT_MESSAGE_STYLE
-    // In WeChat mode, do not display the song name, keep the original chat functionality
-    return;
-#else
-    // Non-WeChat mode: display the song name below the emoji
-    DisplayLockGuard lock(this);
-
-    // Nếu đang có UI FFT + nhạc trên canvas → update trực tiếp vào label
-    if (canvas_ != nullptr && music_root_ != nullptr && lv_obj_is_valid(canvas_)) {
-        std::string text = song_name ? song_name : "";
-        std::string line1, line2;
-
-        size_t pos = text.find('\n');
-        if (pos != std::string::npos) {
-            line1 = text.substr(0, pos);
-            line2 = text.substr(pos + 1);
-        } else {
-            line1 = text;
-            line2.clear();
-        }
-
-        // ==========================
-        // 🎵 DÒNG 1 — TITLE (scroll)
-        // ==========================
-        if (music_title_label_ && lv_obj_is_valid(music_title_label_)) {
-            lv_label_set_text(music_title_label_, line1.c_str());
-            lv_label_set_long_mode(music_title_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
-            lv_obj_set_width(music_title_label_, canvas_width_ - 40);
-        }
-
-        // ==========================
-        // 🎶 DÒNG 2 — SUBINFO (scroll)
-        // ==========================
-        if (music_subinfo_label_ && lv_obj_is_valid(music_subinfo_label_)) {
-            lv_label_set_text(music_subinfo_label_, line2.c_str());
-            lv_label_set_long_mode(music_subinfo_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
-            lv_obj_set_width(music_subinfo_label_, canvas_width_ - 40);
-        }
-
-        // Nếu rỗng → clear chat bubble
-        if ((!song_name || strlen(song_name) == 0) && chat_message_label_) {
-            lv_label_set_text(chat_message_label_, "");
-        }
-
-        return;  // ⬅️ RẤT QUAN TRỌNG — không để UI chat override
+    // Delegate to music visualizer if running
+    if (music_visualizer_ && music_visualizer_->IsRunning()) {
+        DisplayLockGuard lock(this);
+        music_visualizer_->SetMusicInfo(song_name);
+        return;
     }
 
-    // ==========================
-    // Không có FFT → hiển thị kiểu cũ
-    // ==========================
+#if CONFIG_USE_WECHAT_MESSAGE_STYLE
+    return;  // WeChat mode does not display song name
+#else
+    // Fallback: show song name in chat label (when no spectrum is active)
+    DisplayLockGuard lock(this);
     if (chat_message_label_ == nullptr) return;
 
-    if (song_name != nullptr && strlen(song_name) > 0) {
-        std::string music_text = "";
-        music_text += song_name;
-        lv_label_set_text(chat_message_label_, music_text.c_str());
-        
-        // Ensure emoji_label_ and chat_message_label_ are visible, and preview_image_ is hidden
-        if (emoji_label_ != nullptr) {
-            lv_obj_clear_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (preview_image_ != nullptr) {
-            lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
-        }
+    if (song_name && strlen(song_name) > 0) {
+        lv_label_set_text(chat_message_label_, song_name);
+        if (emoji_label_) lv_obj_clear_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+        if (preview_image_) lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
     } else {
-        // Clear the song name display
         lv_label_set_text(chat_message_label_, "");
     }
 #endif
 }
 
 LcdDisplay::DisplaySourceType LcdDisplay::DetectSourceFromInfo() {
-    std::string s = music_info_;
-    for (auto &c : s) c = tolower(c);
-
-    // 1) Nhận diện Radio trước
-    if (s.find("radio") != std::string::npos ||
-        s.find("fm")    != std::string::npos) {
-        ESP_LOGI(TAG, "Detected source: RADIO from info: %s", music_info_.c_str());
-        return DisplaySourceType::RADIO;
+    if (music_visualizer_) {
+        auto src = music_visualizer_->DetectSource();
+        switch (src) {
+            case music::SourceType::SD_CARD: return DisplaySourceType::SD_CARD;
+            case music::SourceType::ONLINE:  return DisplaySourceType::ONLINE;
+            case music::SourceType::RADIO:   return DisplaySourceType::RADIO;
+            default:                         return DisplaySourceType::NONE;
+        }
     }
-
-    // 2) Nhận diện Online trước
-	if (s.rfind("ONLINE:", 0) == 0) {
-        ESP_LOGI(TAG, "Detected source: ONLINE from info: %s", music_info_.c_str());
-        return DisplaySourceType::ONLINE;
-    }
-
-    if (s.find("online") != std::string::npos ||
-        s.find("http")   != std::string::npos ||
-        s.find("rtmp")   != std::string::npos ||
-        s.find("m3u")    != std::string::npos) {
-        ESP_LOGI(TAG, "Detected source: ONLINE from info: %s", music_info_.c_str());
-        return DisplaySourceType::ONLINE;
-    }
-
-    // 3) SD-card (chỉ khi REAL PLAYING)
-    Esp32SdMusic* sd = get_sd_player();
-    if (sd && sd->getState() == Esp32SdMusic::PlayerState::Playing) {
-        ESP_LOGI(TAG, "Detected source: SD_CARD from info: %s", music_info_.c_str());
-        return DisplaySourceType::SD_CARD;
-    }
-
-    // 4) Default to NONE
-    ESP_LOGI(TAG, "Detected source: NONE from info: %s", music_info_.c_str());
     return DisplaySourceType::NONE;
 }
 
@@ -1492,930 +1322,17 @@ void LcdDisplay::SetTheme(Theme* theme) {
     Display::SetTheme(lvgl_theme);
 }
 
-void LcdDisplay::StartFFT() {
-    ESP_LOGI(TAG, "Starting LcdDisplay with periodic data updates");
-    
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Create a periodic update task
-    fft_task_should_stop = false;  // Reset the stop flag
-    xTaskCreatePinnedToCore(
-        periodicUpdateTaskWrapper,
-        "display_fft",      // Task name
-        1024 * 3,           // Stack size
-        this,               // Parameter
-        1,                  // Priority
-        &fft_task_handle,   // Save to member variable
-        0                   // Run on core 0
-    );
-}
-
-void LcdDisplay::StopFFT() {
-    ESP_LOGI(TAG, "Stopping FFT display");
-    
-    // Stop the FFT display task
-    if (fft_task_handle != nullptr) {
-        ESP_LOGI(TAG, "Stopping FFT display task");
-        fft_task_should_stop = true;  // Set the stop flag
-        
-        // Wait for the task to stop (wait up to 1 second)
-        int wait_count = 0;
-        while (fft_task_handle != nullptr && wait_count < 100) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            wait_count++;
-        }
-        
-        if (fft_task_handle != nullptr) {
-            ESP_LOGW(TAG, "FFT task did not stop gracefully, force deleting");
-            vTaskDelete(fft_task_handle);
-            fft_task_handle = nullptr;
-        } else {
-            ESP_LOGI(TAG, "FFT display task stopped successfully");
-        }
-    }
-    
-    // Use the display lock to protect all operations
-    DisplayLockGuard lock(this);
-    
-    // Reset FFT state variables
-    fft_data_ready = false;
-    audio_display_last_update = 0;
-    
-    // Reset the heights of the spectrum bars
-    memset(current_heights, 0, sizeof(current_heights));
-    
-    // Reset the average power spectrum data
-    for (int i = 0; i < LCD_FFT_SIZE/2; i++) {
-        avg_power_spectrum[i] = -25.0f;
-    }
-    
-    // Delete the FFT canvas object to restore the original UI
-    if (canvas_ != nullptr) {
-        lv_obj_del(canvas_);
-        canvas_ = nullptr;
-        ESP_LOGI(TAG, "FFT canvas deleted");
-    }
-	
-	// =============================================
-	// XÓA HOÀN TOÀN UI NHẠC (tránh bị đọng label)
-	// =============================================
-	if (music_root_ && lv_obj_is_valid(music_root_)) {
-		lv_obj_del(music_root_);     // delete toàn bộ nhóm UI nhạc
-		ESP_LOGI(TAG, "Music UI deleted");
-	}
-	
-	// =========================
-	// RESET MUSIC UI POINTERS
-	// =========================
-	music_root_          = nullptr;
-	music_title_label_   = nullptr;
-	music_date_label_    = nullptr;
-	music_bar_           = nullptr;
-	music_time_left_     = nullptr;
-	music_time_total_    = nullptr;
-	music_time_remain_   = nullptr;    
-	music_subinfo_label_ = nullptr;
-	music_next_line_     = nullptr;
-    
-    // Free the canvas buffer memory
-    if (canvas_buffer_ != nullptr) {
-        heap_caps_free(canvas_buffer_);
-        canvas_buffer_ = nullptr;
-        ESP_LOGI(TAG, "FFT canvas buffer freed");
-    }
-    
-    // Reset canvas dimension variables
-    canvas_width_ = 0;
-    canvas_height_ = 0;
-	
-	// Ẩn các label nhạc nếu vẫn còn tồn tại (trường hợp canvas bị xóa nhưng label vẫn hiện)
-    if (music_title_label_)   lv_obj_add_flag(music_title_label_, LV_OBJ_FLAG_HIDDEN);
-    if (music_date_label_)    lv_obj_add_flag(music_date_label_, LV_OBJ_FLAG_HIDDEN);
-    if (music_bar_)           lv_obj_add_flag(music_bar_, LV_OBJ_FLAG_HIDDEN);
-    if (music_time_left_)     lv_obj_add_flag(music_time_left_, LV_OBJ_FLAG_HIDDEN);
-    if (music_time_total_)    lv_obj_add_flag(music_time_total_, LV_OBJ_FLAG_HIDDEN);
-    if (music_time_remain_)   lv_obj_add_flag(music_time_remain_, LV_OBJ_FLAG_HIDDEN);
-    if (music_subinfo_label_) lv_obj_add_flag(music_subinfo_label_, LV_OBJ_FLAG_HIDDEN);
-    if (music_next_line_)     lv_obj_add_flag(music_next_line_, LV_OBJ_FLAG_HIDDEN);
-
-	
-    // Restore main UI (emoji, idle card, etc.) via centralized API
-    SetMediaOverlayActive(false);
-    
-    ESP_LOGI(TAG, "FFT display stopped, original UI restored");
-}
-
-void LcdDisplay::periodicUpdateTaskWrapper(void* arg) {
-    auto self = static_cast<LcdDisplay*>(arg);
-    self->periodicUpdateTask();
-}
-
-void LcdDisplay::periodicUpdateTask() {
-    ESP_LOGI(TAG, "Periodic update task started");
-    
-    if (canvas_ == nullptr) {
-        int status_h = lv_obj_get_height(status_bar_);
-        create_canvas(status_h);
-
-        if (canvas_) {
-            {
-                DisplayLockGuard lock(this);
-                
-                // Hide main UI for media overlay, then build music UI
-                SetMediaOverlayActive(true);
-
-                // Clear nền
-                lv_canvas_fill_bg(canvas_, lv_color_black(), LV_OPA_COVER);
-
-                // ================= UI BẮT ĐẦU (LVGL 9 - MODERN STYLE) =================
-				// 1. Lấy trạng thái Player và Source
-				Esp32SdMusic* sd_player = get_sd_player();
-				bool sd_playing = sd_player &&
-								  sd_player->getState() == Esp32SdMusic::PlayerState::Playing;
-
-				DisplaySourceType source = DetectSourceFromInfo();
-
-				// 2. Định nghĩa Palette màu sắc sống động (Vivid Colors)
-				// Dùng màu Neon để nổi bật trên nền tối
-				lv_color_t color_accent;
-				const char* icon_symbol;
-
-				switch (source) {
-					case DisplaySourceType::SD_CARD:
-						color_accent = lv_color_hex(0x00FFC2); // Emerald Neon (Xanh ngọc sáng)
-						icon_symbol  = LV_SYMBOL_SD_CARD;
-						break;
-					case DisplaySourceType::RADIO:
-						color_accent = lv_color_hex(0xFF9E40); // Sunset Orange (Cam rực rỡ)
-						icon_symbol  = LV_SYMBOL_VOLUME_MAX; // Hoặc icon sóng
-						break;
-					case DisplaySourceType::ONLINE:
-						color_accent = lv_color_hex(0x00D9FF); // Cyber Cyan (Xanh dương điện tử)
-						icon_symbol  = LV_SYMBOL_AUDIO; // Hoặc icon Wifi/Cloud
-						break;
-					case DisplaySourceType::NONE:
-					default:
-						color_accent = lv_color_hex(0xFFFFFF);
-						icon_symbol  = LV_SYMBOL_AUDIO;
-						break;
-				}
-
-				// Chỉ hiển thị UI nếu có nguồn phát hợp lệ
-				if (!(source == DisplaySourceType::NONE && !sd_playing))
-				{
-					auto theme      = static_cast<LvglTheme*>(current_theme_);
-					auto text_font  = theme->text_font()->font();
-					auto icon_font  = theme->large_icon_font()->font();
-
-					// Kích thước cơ sở để tính toán tỉ lệ (Responsive)
-					const int w = canvas_width_;
-					const int h = canvas_height_;
-					const int pad_side = (int)(w * 0.04f); // Lề 4% chiều rộng
-					const int pad_top  = (int)(h * 0.05f); // Lề 5% chiều cao
-
-					// --- ROOT CONTAINER ---
-					music_root_ = lv_obj_create(canvas_);
-					lv_obj_remove_style_all(music_root_);
-					lv_obj_set_size(music_root_, w, h);
-					lv_obj_set_style_bg_opa(music_root_, LV_OPA_TRANSP, 0);
-
-					// =========================================================
-					// (1) BACKGROUND OVERLAY: GRADIENT MỀM MẠI
-					// Thay vì 2 khối cứng, dùng Gradient dọc để tan vào nền FFT
-					// =========================================================
-					lv_obj_t* overlay = lv_obj_create(music_root_);
-					lv_obj_remove_style_all(overlay);
-					lv_obj_set_size(overlay, w, (int)(h * 0.35f)); // Phủ 35% màn hình từ trên xuống
-					
-					// Tạo hiệu ứng mờ dần từ Đen (70%) -> Trong suốt
-					lv_obj_set_style_bg_color(overlay, lv_color_black(), 0);
-					lv_obj_set_style_bg_grad_color(overlay, lv_color_black(), 0);
-					lv_obj_set_style_bg_grad_dir(overlay, LV_GRAD_DIR_VER, 0);
-					lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, 0);       // Nền chính
-					lv_obj_set_style_bg_main_stop(overlay, 0, 0);            // Bắt đầu gradient ngay đỉnh
-					lv_obj_set_style_bg_grad_stop(overlay, 255, 0);          // Kết thúc ở đáy object
-					
-					// Hack trong suốt bằng Map opacity (Nếu LVGL config hỗ trợ) 
-					// Hoặc đơn giản dùng màu đen với OPA giảm dần. 
-					// Cách an toàn nhất cho ESP32 ít tốn resource:
-					lv_obj_set_style_bg_opa(overlay, 200, 0); // Độ đậm tổng thể
-
-					// =========================================================
-					// (2) ICON CHÍNH: CÂN ĐỐI VÀ NỔI BẬT
-					// =========================================================
-					lv_obj_t* icon = lv_label_create(music_root_);
-					lv_obj_set_style_text_font(icon, icon_font, 0);
-					lv_obj_set_style_text_color(icon, color_accent, 0);
-					lv_label_set_text(icon, icon_symbol);
-					
-					// Đặt icon ở góc trên trái, nhưng căn chỉnh visual cho cân
-					lv_obj_align(icon, LV_ALIGN_TOP_LEFT, pad_side, pad_top);
-
-					// =========================================================
-					// (3) XỬ LÝ NỘI DUNG (Content)
-					// =========================================================
-					
-					// Biến tạm để lưu chuỗi hiển thị
-					std::string title_str, sub_str;
-					bool show_progress = false;
-
-					// Lấy dữ liệu theo Source
-					if (source == DisplaySourceType::SD_CARD && sd_playing) {
-						title_str = sd_player->getCurrentTrack();
-						if (title_str.empty()) title_str = "Unknown Track";
-						
-						int bitrate = sd_player->getBitrate();
-						char buff[32];
-						snprintf(buff, sizeof(buff), "%d kbps / MP3", bitrate/1000);
-						sub_str = std::string(buff);
-						show_progress = true;
-					} else {
-						// ================================
-						// TÁCH 2 DÒNG TỪ music_info_
-						// ================================
-						std::string line1, line2;
-						{
-							size_t pos = music_info_.find('\n');
-							if (pos != std::string::npos) {
-								line1 = music_info_.substr(0, pos);
-								line2 = music_info_.substr(pos + 1);
-							} else {
-								// Nếu không có xuống dòng → lấy nguyên chuỗi
-								line1 = music_info_;
-								line2 = "";
-							}
-						}
-
-						// --- Title ---
-						title_str = line1.empty()
-									? (source == DisplaySourceType::ONLINE ? "Music Online" : "FM Radio")
-									: line1;
-
-						// --- Sub info ---
-						if (source == DisplaySourceType::ONLINE) {
-							// GIỮ nguyên line2 nếu đã được SetMusicInfo gửi xuống
-							sub_str = !line2.empty() ? line2 : "Đang phát...";
-						}
-						else if (source == DisplaySourceType::RADIO) {
-							// GIỮ nguyên line2 nếu đã được SetRadioInfo gửi xuống
-							sub_str = !line2.empty() ? line2 : "Live Broadcast";
-						}
-
-						show_progress = false;
-					}
-
-					// --- TITLE (TIÊU ĐỀ) ---
-					lv_obj_t* title = lv_label_create(music_root_);
-					lv_obj_set_style_text_font(title, text_font, 0);
-					lv_obj_set_style_text_color(title, lv_color_white(), 0);
-					lv_label_set_long_mode(title, LV_LABEL_LONG_SCROLL_CIRCULAR); // Cuộn tròn nếu dài
-					
-					// Tính toán chiều rộng để không đè lên icon và lề phải
-					// W = Màn hình - (Lề trái + Icon + Khoảng cách icon-text) - Lề phải
-					int icon_width = 30; // Ước lượng, hoặc dùng lv_obj_get_width sau khi vẽ
-					int text_width = w - (pad_side + icon_width + pad_side) - pad_side; 
-					
-					lv_obj_set_width(title, text_width);
-					lv_label_set_text(title, title_str.c_str());
-					
-					// Căn title thẳng hàng với đỉnh của icon
-					lv_obj_align_to(title, icon, LV_ALIGN_OUT_RIGHT_TOP, pad_side, 0);
-					music_title_label_ = title;
-
-					// --- SUB INFO (THÔNG TIN PHỤ) ---
-					lv_obj_t* sub = lv_label_create(music_root_);
-					lv_obj_set_style_text_font(sub, text_font, 0);
-					// Màu xám sáng để dịu mắt hơn trắng tinh, tạo chiều sâu
-					lv_obj_set_style_text_color(sub, lv_color_hex(0xAAAAAA), 0); 
-					lv_label_set_text(sub, sub_str.c_str());
-					lv_label_set_long_mode(sub, LV_LABEL_LONG_SCROLL_CIRCULAR);
-					lv_obj_set_width(sub, canvas_width_ - 40);
-					
-					// Nằm ngay dưới Title
-					lv_obj_align_to(sub, title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4); // Cách title 4px
-					music_subinfo_label_ = sub;
-
-					// =========================================================
-					// (4) PROGRESS BAR & NEXT TRACK (CHỈ CHO SD CARD)
-					// =========================================================
-					if (show_progress) {
-						int64_t pos_ms = sd_player->getCurrentPositionMs();
-						int64_t dur_ms = sd_player->getDurationMs();
-						
-						// --- THANH TIẾN ĐỘ TINH TẾ (SLIM BAR) ---
-						lv_obj_t* bar = lv_bar_create(music_root_);
-						lv_obj_set_size(bar, w - (pad_side * 2), 4); // Cao 4px cho thanh mảnh
-						lv_obj_align_to(bar, sub, LV_ALIGN_OUT_BOTTOM_LEFT, -icon_width - pad_side, 12); // Cách sub 12px
-
-						// Style Nền Bar (Tối)
-						lv_obj_set_style_bg_color(bar, lv_color_hex(0x303030), LV_PART_MAIN);
-						lv_obj_set_style_radius(bar, 2, LV_PART_MAIN);
-
-						// Style Indicator (Màu theo Accent)
-						lv_obj_set_style_bg_color(bar, color_accent, LV_PART_INDICATOR);
-						lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
-						lv_obj_set_style_radius(bar, 2, LV_PART_INDICATOR);
-						
-						// Hiệu ứng bóng đổ nhẹ cho Indicator (Glow effect giả lập)
-						// lv_obj_set_style_shadow_width(bar, 5, LV_PART_INDICATOR);
-						// lv_obj_set_style_shadow_color(bar, color_accent, LV_PART_INDICATOR);
-
-						lv_bar_set_range(bar, 0, dur_ms);
-						lv_bar_set_value(bar, pos_ms, LV_ANIM_OFF);
-						music_bar_ = bar;
-
-						// --- THỜI GIAN (Time Labels) ---
-						// Current Time (Bên trái Bar)
-						lv_obj_t* t_curr = lv_label_create(music_root_);
-						lv_obj_set_style_text_font(t_curr, text_font, 0);
-						lv_obj_set_style_text_color(t_curr, color_accent, 0); // Màu giống icon cho đồng bộ
-						lv_label_set_text(t_curr, sd_player->getCurrentTimeString().c_str());
-						lv_obj_align_to(t_curr, bar, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 6);
-						music_time_left_ = t_curr;
-
-						// Duration / Remaining (Bên phải Bar)
-						lv_obj_t* t_dur = lv_label_create(music_root_);
-						lv_obj_set_style_text_font(t_dur, text_font, 0);
-						lv_obj_set_style_text_color(t_dur, lv_color_hex(0xAAAAAA), 0);
-						lv_label_set_text(t_dur, sd_player->getDurationString().c_str()); // Hoặc tính remain
-						lv_obj_align_to(t_dur, bar, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 6);
-						music_time_remain_ = t_dur; // Tái sử dụng pointer này
-
-						// --- NEXT TRACK INFO (Dòng nhỏ cuối cùng) ---
-						// Lấy tên bài tiếp theo
-						auto tracks = sd_player->listTracks();
-						std::string cur_path = sd_player->getCurrentTrackPath();
-						int idx = -1; 
-						for(size_t i=0; i<tracks.size(); ++i) if(tracks[i].path == cur_path) idx = i;
-						
-						std::string next_txt = "End of playlist";
-						if(idx >= 0 && idx < (int)tracks.size() - 1) next_txt = tracks[idx+1].name;
-						else if(!tracks.empty()) next_txt = tracks[0].name; // Loop về bài đầu
-
-						lv_obj_t* next_lbl = lv_label_create(music_root_);
-						lv_obj_set_style_text_font(next_lbl, text_font, 0);
-						lv_obj_set_style_text_color(next_lbl, lv_color_hex(0x707070), 0); // Màu tối hơn để ít gây chú ý
-						
-						char next_buff[128];
-						snprintf(next_buff, sizeof(next_buff), "Next: %s", next_txt.c_str());
-						lv_label_set_text(next_lbl, next_buff);
-						lv_label_set_long_mode(next_lbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
-						lv_obj_set_width(next_lbl, w - pad_side * 2);
-						
-						// Đặt ở vị trí cân đối phía dưới
-						lv_obj_align_to(next_lbl, t_curr, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
-						music_next_line_ = next_lbl;
-					} 
-					else {
-						// Reset các pointer không dùng cho Online/Radio để tránh lỗi update
-						music_bar_ = nullptr;
-						music_time_left_ = nullptr;
-						music_time_remain_ = nullptr;
-						music_next_line_ = nullptr;
-						music_time_total_ = nullptr;
-					}
-				}
-				// ================= UI KẾT THÚC =================
-
-                lv_obj_invalidate(canvas_);
-            }
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(100));
-    } else {
-        ESP_LOGI(TAG, "Canvas already created");
-    }
-  
-    const TickType_t displayInterval      = pdMS_TO_TICKS(25);  // Display refresh interval (25ms)
-    const TickType_t audioProcessInterval = pdMS_TO_TICKS(10);  // Audio processing interval (10ms)
-    
-    TickType_t lastDisplayTime = xTaskGetTickCount();
-    TickType_t lastAudioTime   = xTaskGetTickCount();
-    
-    while (!fft_task_should_stop) {
-        
-        TickType_t currentTime = xTaskGetTickCount();
-        
-        // Process audio data at regular intervals
-        if (currentTime - lastAudioTime >= audioProcessInterval) {
-            if (final_pcm_data_fft != nullptr) {
-                processAudioData();  // Quick processing, non-blocking
-            } else {
-                vTaskDelay(pdMS_TO_TICKS(100));
-            }
-            lastAudioTime = currentTime;
-        }
-        
-        // Display refresh (30Hz)
-        if (currentTime - lastDisplayTime >= displayInterval) {
-            if (fft_data_ready) {
-                DisplayLockGuard lock(this);
-                drawSpectrumIfReady();
-                lv_area_t refresh_area;
-                refresh_area.x1 = 0;
-                refresh_area.y1 = height_ - bar_max_hight_;
-                refresh_area.x2 = canvas_width_ - 1;
-                refresh_area.y2 = height_ - 1; // Only refresh the spectrum area
-                lv_obj_invalidate_area(canvas_, &refresh_area);
-                fft_data_ready = false;
-                lastDisplayTime = currentTime;
-            }
-        }
-        
-        // ================================
-        // 🟦 UPDATE MUSIC UI (mỗi 1 giây)
-        // ================================
-        static TickType_t lastClockUpdate = 0;
-        if (currentTime - lastClockUpdate >= pdMS_TO_TICKS(1000)) {
-
-            Esp32SdMusic* sd = get_sd_player();
-
-            if (sd &&
-                music_root_        && lv_obj_is_valid(music_root_) &&
-                music_bar_         && lv_obj_is_valid(music_bar_))
-            {
-                DisplayLockGuard lock(this);
-
-                // Cập nhật progress bar
-                lv_bar_set_range(music_bar_, 0, sd->getDurationMs());
-                lv_bar_set_value(music_bar_, sd->getCurrentPositionMs(), LV_ANIM_OFF);
-
-                // Thời gian hiện tại
-                if (music_time_left_ && lv_obj_is_valid(music_time_left_)) {
-                    std::string cur = sd->getCurrentTimeString();
-                    lv_label_set_text(music_time_left_, cur.c_str());
-                }
-
-                // Thời gian còn lại
-                if (music_time_remain_ && lv_obj_is_valid(music_time_remain_)) {
-					int64_t pos = sd->getCurrentPositionMs();
-					int64_t dur = sd->getDurationMs();
-					int64_t rem = dur - pos;
-					if (rem < 0) rem = 0;
-
-					std::string remain_str = ms_to_time_string(rem);
-					lv_label_set_text(music_time_remain_, remain_str.c_str());
-				}
-
-                // Tên bài hát (nếu chuyển bài)
-                if (music_title_label_ && lv_obj_is_valid(music_title_label_)) {
-                    std::string t = sd->getCurrentTrack();
-                    if (!t.empty()) {
-                        lv_label_set_text(music_title_label_, t.c_str());
-                    }
-                }
-
-                // Nếu sau này bạn có dùng music_date_label_ thì block này vẫn an toàn
-                if (music_date_label_ && lv_obj_is_valid(music_date_label_)) {
-                    time_t now = time(NULL);
-                    struct tm tm_info;
-                    localtime_r(&now, &tm_info);
-
-                    char buf[32];
-                    strftime(buf, sizeof(buf), "%d-%m-%Y", &tm_info);
-                    lv_label_set_text(music_date_label_, buf);
-                }
-            
-				// --- cập nhật bitrate + tổng thời lượng ---
-				if (music_subinfo_label_ && lv_obj_is_valid(music_subinfo_label_)) {
-
-					int br = sd->getBitrate();   // lấy bitrate gốc (thường = 128000)
-					if (br > 1000) br /= 1000;   // chuyển bps → kbps (128000 → 128)
-
-					char sub_text[64];
-					snprintf(sub_text, sizeof(sub_text),
-							 "%d kbps  •  %s",
-							 br,
-							 sd->getDurationString().c_str());
-
-					lv_label_set_text(music_subinfo_label_, sub_text);
-					lv_label_set_long_mode(music_subinfo_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
-					lv_obj_set_width(music_subinfo_label_, canvas_width_ - 40);
-
-				}
-				
-				// --- cập nhật dòng "Tiếp theo: ..." ---
-				if (music_next_line_ && lv_obj_is_valid(music_next_line_)) {
-
-					auto list = sd->listTracks();
-
-					// tìm index hiện tại qua path
-					std::string cur_path = sd->getCurrentTrackPath();
-					int cur = 0;
-					for (int i = 0; i < (int)list.size(); i++) {
-						if (list[i].path == cur_path) {
-							cur = i;
-							break;
-						}
-					}
-
-					int total = list.size();
-					int next = (cur + 1) % total;
-
-					std::string next_title =
-						(next < total) ? list[next].name : "Không có bài kế tiếp";
-
-					std::string tip = "Tiếp theo: " + next_title;
-					lv_label_set_text(music_next_line_, tip.c_str());
-				}
-
-			}		
-			
-            lastClockUpdate = currentTime;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(10)); // Short delay
-    }
-    
-    ESP_LOGI(TAG, "FFT display task stopped");
-    fft_task_handle = nullptr;  // Clear the task handle
-    vTaskDelete(NULL);  // Delete the current task
-}
-
-void LcdDisplay::create_canvas(int32_t status_bar_height) {
-    DisplayLockGuard lock(this);
-    if (canvas_ != nullptr) {
-        lv_obj_del(canvas_);
-    }
-    if (canvas_buffer_ != nullptr) {
-        heap_caps_free(canvas_buffer_);
-        canvas_buffer_ = nullptr;
-    }
-
-    // int status_bar_height=lv_obj_get_height(status_bar_);
-    ESP_LOGI(TAG, "Status bar height: %d", status_bar_height);
-    canvas_width_=width_;
-    canvas_height_=height_-status_bar_height;
-    ESP_LOGI(TAG, "Creating canvas with width: %d, height: %d", canvas_width_, canvas_height_);
-
-    canvas_buffer_=(uint16_t*)heap_caps_malloc(canvas_width_ * canvas_height_ * sizeof(uint16_t), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
-    if (canvas_buffer_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to allocate canvas buffer");
-        return;
-    }
-    ESP_LOGI(TAG, "canvas buffer allocated successfully");  
-    canvas_ = lv_canvas_create(lv_scr_act());
-    lv_canvas_set_buffer(canvas_, canvas_buffer_, canvas_width_, canvas_height_, LV_COLOR_FORMAT_RGB565);
-    ESP_LOGI(TAG,"width: %d, height: %d", width_, height_);
-
-    lv_obj_set_pos(canvas_, 0, status_bar_height);
-    lv_obj_set_size(canvas_, canvas_width_, canvas_height_);
-    lv_canvas_fill_bg(canvas_, lv_color_make(0, 0, 0), LV_OPA_TRANSP);
-    lv_obj_move_foreground(canvas_);
-    ESP_LOGI(TAG, "canvas created successfully");  
-}
-
-void LcdDisplay::drawSpectrumIfReady() {
-    if (fft_data_ready) {
-        draw_spectrum(avg_power_spectrum, LCD_FFT_SIZE/2);
-        fft_data_ready = false;
-    }
-}
-
-void LcdDisplay::draw_spectrum(float *power_spectrum,int fft_size){
-    const int bartotal=BAR_COL_NUM;
-    int bar_height;
-    const int bar_max_height = bar_max_hight_;
-    const int bar_width = canvas_width_ / bartotal;
-    int x_pos = 0;
-    int y_pos = (canvas_height_)-1;
-
-    float magnitude[bartotal] = {0};
-    float max_magnitude = 0;
-
-    const float MIN_DB = -25.0f;
-    const float MAX_DB = 0.0f;
-
-    for (int bin = 0; bin < bartotal; bin++) {
-        int start = bin * (fft_size / bartotal);
-        int end = (bin + 1) * (fft_size / bartotal);
-        magnitude[bin] = 0;
-        int count = 0;
-        for (int k = start; k < end; k++) {
-            magnitude[bin] += sqrt(power_spectrum[k]);
-            count++;
-        }
-        if (count > 0) {
-            magnitude[bin] /= count;
-        }
-        if (magnitude[bin] > max_magnitude) {
-            max_magnitude = magnitude[bin];
-        }
-    }
-
-    magnitude[1]=magnitude[1]*0.6;
-    magnitude[2]=magnitude[2]*0.7;
-    magnitude[3]=magnitude[3]*0.8;
-    magnitude[4]=magnitude[4]*0.8;
-    magnitude[5]=magnitude[5]*0.9;
-
-    for (int bin = 1; bin < bartotal; bin++) {
-        if (magnitude[bin] > 0.0f && max_magnitude > 0.0f) {
-            // Relative dB value: 20 * log10(magnitude/ref_level)
-            magnitude[bin] = 20.0f * log10f(magnitude[bin] / max_magnitude+ 1e-10);
-        } else {
-            magnitude[bin] = MIN_DB;
-        }
-        // if (magnitude[bin] > max_magnitude) max_magnitude = magnitude[bin];
-        magnitude[bin] = std::max(MIN_DB, std::min(MAX_DB, magnitude[bin]));
-    }
-
-    std::fill_n(canvas_buffer_, canvas_width_ * canvas_height_, COLOR_BLACK);
-    
-    // Skip the DC component (k=0)
-    for (int k = 1; k < bartotal; k++) {
-        x_pos = canvas_width_ / bartotal * (k - 1);
-        float mag = (magnitude[k] - MIN_DB) / (MAX_DB - MIN_DB);
-        mag = std::max(0.0f, std::min(1.0f, mag));
-        bar_height = int(mag * (bar_max_height));
-        int color = get_bar_color(k);
-        draw_bar(x_pos, y_pos, bar_width, bar_height, color, k - 1);
-    }
-}
-
-int16_t* LcdDisplay::MakeAudioBuffFFT(size_t sample_count) {
-    if (final_pcm_data_fft == nullptr) {
-        final_pcm_data_fft = (int16_t *)heap_caps_malloc( sample_count, MALLOC_CAP_SPIRAM);
-    }
-    return final_pcm_data_fft;
-}
-
-void LcdDisplay::FeedAudioDataFFT(int16_t* data, size_t sample_count) {
-    // Copy PCM data for FFT display
-    memcpy( final_pcm_data_fft, data, sample_count);
-}
-
-void LcdDisplay::ReleaseAudioBuffFFT(int16_t* buffer) {
-    if (final_pcm_data_fft != nullptr) {
-        heap_caps_free(final_pcm_data_fft);
-        final_pcm_data_fft = nullptr;
-    }
-}
-
-void LcdDisplay::processAudioData() {
-    if(final_pcm_data_fft != nullptr) {
-        if(audio_display_last_update <= 2) {
-            memcpy(audio_data_, final_pcm_data_fft, sizeof(int16_t) * 1152);
-            for(int i = 0; i < 1152; i++) {
-                frame_audio_data[i] += audio_data_[i];
-            }
-            audio_display_last_update++;
-        } else {
-            const int HOP_SIZE = LCD_FFT_SIZE;
-            const int NUM_SEGMENTS = 1 + (1152 - LCD_FFT_SIZE) / HOP_SIZE;
-
-            for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
-                int start = seg * HOP_SIZE;
-                if (start + LCD_FFT_SIZE > 1152) break;
-
-                // Prepare the current segment data
-                for (int i = 0; i < LCD_FFT_SIZE; i++) {
-                    int idx = start + i;
-                    float sample = frame_audio_data[idx] / 32768.0f;
-                    fft_real[i] = sample * hanning_window_float[i];
-                    fft_imag[i] = 0.0f;
-                }
-
-                compute(fft_real, fft_imag, LCD_FFT_SIZE, true);
-
-                // Calculate and accumulate the power spectrum (double-sided)
-                for (int i = 0; i < LCD_FFT_SIZE / 2; i++) {
-                    avg_power_spectrum[i] += fft_real[i] * fft_real[i] + fft_imag[i] * fft_imag[i]; // Power = amplitude squared
-                }
-            }
-
-            // Compute the average
-            for (int i = 0; i < LCD_FFT_SIZE / 2; i++) {
-                avg_power_spectrum[i] /= NUM_SEGMENTS;
-            }
-
-            audio_display_last_update = 0;
-            fft_data_ready = true;
-            memset(frame_audio_data, 0, sizeof(int16_t) * 1152);
-        }
-    } else {
-        ESP_LOGI(TAG, "audio_data_ is nullptr");
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
-}
-
-void LcdDisplay::draw_bar(int x,int y,int bar_width,int bar_height,uint16_t color,int bar_index){
-    const int block_space = 2;
-    const int block_x_size = bar_width - block_space;
-    const int block_y_size = 4;
-
-    int blocks_per_col = (bar_height / (block_y_size + block_space));
-    int start_x = (block_x_size + block_space) / 2 + x;
-
-    if (current_heights[bar_index] < bar_height) {
-        current_heights[bar_index] = bar_height;
-        falling_colors[bar_index] = COLOR_BLUE; // Màu xanh khi lên cao nhất
-    }
-    else {
-        uint32_t current_time = esp_timer_get_time() / 1000;
-        int fall_speed = 2;
-        current_heights[bar_index] = current_heights[bar_index] - fall_speed;
-        if (current_heights[bar_index] > (block_y_size + block_space)) {
-            if (current_time - last_flash_time[bar_index] > 80) {
-                falling_colors[bar_index] = get_random_color();
-                last_flash_time[bar_index] = current_time;
-            }
-            draw_block(start_x, canvas_height_ - current_heights[bar_index], block_x_size, block_y_size, falling_colors[bar_index], bar_index);
-        }
-    }
-
-    draw_block(start_x, canvas_height_ - 1, block_x_size, block_y_size, color, bar_index);
-
-    for (int j = 1; j < blocks_per_col; j++) {
-        int start_y = j * (block_y_size + block_space);
-        draw_block(start_x, canvas_height_ - start_y, block_x_size, block_y_size, color, bar_index);
-    }
-}
-
-void LcdDisplay::draw_block(int x,int y,int block_x_size,int block_y_size,uint16_t color,int bar_index){
-    for (int row = y; row > y-block_y_size;row--) {
-        // Draw one row at a time
-        uint16_t* line_start = &canvas_buffer_[row * canvas_width_ + x];
-        std::fill_n(line_start, block_x_size, color);
-    }
-}
-
-void LcdDisplay::compute(float* real, float* imag, int n, bool forward) {
-    // Bit-reversal permutation
-    int j = 0;
-    for (int i = 0; i < n; i++) {
-        if (j > i) {
-            std::swap(real[i], real[j]);
-            std::swap(imag[i], imag[j]);
-        }
-        
-        int m = n >> 1;
-        while (m >= 1 && j >= m) {
-            j -= m;
-            m >>= 1;
-        }
-        j += m;
-    }
-
-    // FFT computation
-    for (int s = 1; s <= (int)log2(n); s++) {
-        int m = 1 << s;
-        int m2 = m >> 1;
-        float w_real = 1.0f;
-        float w_imag = 0.0f;
-        float angle = (forward ? -2.0f : 2.0f) * M_PI / m;
-        float wm_real = cosf(angle);
-        float wm_imag = sinf(angle);
-        
-        for (int j = 0; j < m2; j++) {
-            for (int k = j; k < n; k += m) {
-                int k2 = k + m2;
-                float t_real = w_real * real[k2] - w_imag * imag[k2];
-                float t_imag = w_real * imag[k2] + w_imag * real[k2];
-                
-                real[k2] = real[k] - t_real;
-                imag[k2] = imag[k] - t_imag;
-                real[k] += t_real;
-                imag[k] += t_imag;
-            }
-            
-            float w_temp = w_real;
-            w_real = w_real * wm_real - w_imag * wm_imag;
-            w_imag = w_temp * wm_imag + w_imag * wm_real;
-        }
-    }
-    
-    // Scale for forward transform
-    if (forward) {
-        for (int i = 0; i < n; i++) {
-            real[i] /= n;
-            imag[i] /= n;
-        }
-    }
-}
-
-uint16_t LcdDisplay::get_bar_color(int x_pos) {
-    // Tăng offset theo thời gian để màu chạy
-    static float hue_offset = 0.0f;
-    hue_offset += 0.1f;       // tốc độ chạy màu (có thể chỉnh 0.3 → 2.0)
-
-    if (hue_offset >= 360.0f)
-        hue_offset -= 360.0f;
-
-    // Hue tổng = hue theo cột + offset
-    float base_hue = (float)x_pos * (240.0f / 40.0f);   // blue → red
-    float h = fmodf(base_hue + hue_offset, 360.0f);     // hue chạy
-
-    float s = 1.0f;
-    float v = 1.0f;
-    float c = v * s;
-
-    float hh = h / 60.0f;
-    float x = c * (1.0f - fabsf(fmodf(hh, 2.0f) - 1.0f));
-
-    float r1 = 0, g1 = 0, b1 = 0;
-
-    int region = (int)hh;
-    switch (region) {
-        case 0: r1 = c; g1 = x; b1 = 0; break;
-        case 1: r1 = x; g1 = c; b1 = 0; break;
-        case 2: r1 = 0; g1 = c; b1 = x; break;
-        case 3: r1 = 0; g1 = x; b1 = c; break;
-        case 4: r1 = x; g1 = 0; b1 = c; break;
-        default:r1 = c; g1 = 0; b1 = x; break;
-    }
-
-    float m = v - c;
-    float rf = r1 + m;
-    float gf = g1 + m;
-    float bf = b1 + m;
-
-    uint8_t r = (uint8_t)(rf * 31);
-    uint8_t g = (uint8_t)(gf * 63);
-    uint8_t b = (uint8_t)(bf * 31);
-
-    return (r << 11) | (g << 5) | b;
-}
-
-uint16_t LcdDisplay::get_random_color() {
-    // Tạo màu ngẫu nhiên SÁNG trong định dạng RGB565
-    // Đảm bảo màu sáng bằng cách giới hạn giá trị tối thiểu
-    
-    uint8_t r = (esp_random() % 16) + 16;  // 16-31 (không quá tối)
-    uint8_t g = (esp_random() % 32) + 32;  // 32-63 (sáng)
-    uint8_t b = (esp_random() % 16) + 16;  // 16-31 (không quá tối)
-    
-    // Ưu tiên màu sáng: tăng cường một thành phần màu
-    switch (esp_random() % 3) {
-        case 0: r = 31; break; // Đỏ sáng
-        case 1: g = 63; break; // Xanh lá sáng
-        case 2: b = 31; break; // Xanh dương sáng
-    }
-    
-    return (r << 11) | (g << 5) | b;
-}
+// ===================================================================
+// QR code — thin delegation to qrcode::QRCodeDisplay
+// ===================================================================
 
 void LcdDisplay::DisplayQRCode(const uint8_t* qrcode, const char* text) {
+    if (!qrcode) return;
     DisplayLockGuard lock(this);
-    if (content_ == nullptr || qrcode == nullptr) {
-        return;
+    int status_h = status_bar_ ? lv_obj_get_height(status_bar_) : 0;
+    if (qrcode_display_) {
+        qrcode_display_->Show(qrcode, width_, height_, status_h, text);
     }
-
-    // Get QR code size
-    int qr_size = esp_qrcode_get_size(qrcode);
-    ESP_LOGI(TAG, "QR code size: %d, text: %s", qr_size, text != nullptr ? text : "123456789");
-
-    // Calculate display size (scale QR code to fit screen)
-    int max_size = (width_ < height_ ? width_ : height_) * 70 / 100;
-    int pixel_size = max_size / qr_size;
-    if (pixel_size < 2) pixel_size = 2; // Minimum 2 pixels per module
-    ESP_LOGI(TAG, "QR code pixel size: %d", pixel_size);
-
-    create_canvas(lv_obj_get_height(status_bar_));
-    lv_canvas_fill_bg(canvas_, lv_color_make(0xFF, 0xFF, 0xFF), LV_OPA_COVER);
-    // Initialize layer for drawing
-    lv_layer_t layer;
-    lv_canvas_init_layer(canvas_, &layer);
-    
-    // Setup rect descriptor for QR code modules
-    lv_draw_rect_dsc_t rect_dsc;
-    lv_draw_rect_dsc_init(&rect_dsc);
-    rect_dsc.bg_color = lv_color_black();
-    rect_dsc.bg_opa = LV_OPA_COVER;
-    
-    // Draw QR code modules
-    int qr_pos_x = (canvas_width_ - qr_size * pixel_size) / 2;
-    int qr_pos_y = (canvas_height_ - qr_size * pixel_size) / 2;
-    for (int y = 0; y < qr_size; y++) {
-        for (int x = 0; x < qr_size; x++) {
-            if (esp_qrcode_get_module(qrcode, x, y)) {
-                // Draw black module
-                lv_area_t coords_rect;
-                coords_rect.x1 = x * pixel_size + qr_pos_x;
-                coords_rect.y1 = y * pixel_size + qr_pos_y;
-                coords_rect.x2 = (x + 1) * pixel_size - 1 + qr_pos_x;
-                coords_rect.y2 = (y + 1) * pixel_size - 1 + qr_pos_y;
-                
-                lv_draw_rect(&layer, &rect_dsc, &coords_rect);
-            }
-        }
-    }
-
-    lv_draw_label_dsc_t label_dsc;
-    lv_draw_label_dsc_init(&label_dsc);
-    label_dsc.color = lv_palette_main(LV_PALETTE_ORANGE);
-    label_dsc.text = text != nullptr ? text : ip_address_.c_str();
-    int th = lv_font_get_line_height(label_dsc.font);
-    int32_t text_pos_y = canvas_height_ - 20;
-    text_pos_y =  canvas_height_ - qr_pos_y + (qr_pos_y - th) / 2;
-    ESP_LOGI(TAG, "Canvas w: %d, h: %d, text y pos: %d", canvas_width_, canvas_height_, text_pos_y);
-    lv_area_t coords_text = {qr_pos_x, text_pos_y, canvas_width_ -1, canvas_height_ - 1};
-    lv_draw_label(&layer, &label_dsc, &coords_text);
-    
-    // Finish layer
-    lv_canvas_finish_layer(canvas_, &layer);
-    ESP_LOGI(TAG, "QR code drawn on canvas");
-    qr_code_displayed_ = true;
 }
 
 bool LcdDisplay::QRCodeIsSupported() {
@@ -2423,29 +1340,17 @@ bool LcdDisplay::QRCodeIsSupported() {
 }
 
 void LcdDisplay::ClearQRCode() {
-    if (!qr_code_displayed_) {
-        return;
-    }
-
-    qr_code_displayed_ = false;
     DisplayLockGuard lock(this);
-    if (canvas_ != nullptr) {
-        ESP_LOGI(TAG, "Clearing QR code from canvas");
-        lv_obj_del(canvas_);
-        canvas_ = nullptr;
-    }
-
-    // Free the canvas buffer memory
-    if (canvas_buffer_ != nullptr) {
-        heap_caps_free(canvas_buffer_);
-        canvas_buffer_ = nullptr;
-        ESP_LOGI(TAG, "FFT canvas buffer freed");
+    if (qrcode_display_) {
+        qrcode_display_->Clear();
     }
 }
 
 void LcdDisplay::SetIpAddress(const std::string& ip_address) {
-    ip_address_ = ip_address;
-    ESP_LOGI(TAG, "IP address set to: %s", ip_address_.c_str());
+    if (qrcode_display_) {
+        qrcode_display_->SetIpAddress(ip_address);
+    }
+    ESP_LOGI(TAG, "IP address set to: %s", ip_address.c_str());
 }
 
 void LcdDisplay::SetRotationAndOffset(lv_display_rotation_t rotation, int offset_x, int offset_y) {

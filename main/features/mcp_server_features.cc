@@ -196,11 +196,11 @@ void McpFeatureTools::RegisterRadioTools(Esp32Radio* radio) {
         });
 }
 
+#ifdef CONFIG_SD_CARD_ENABLE
 /* ------------------------------------------------------------------ */
-/*  SD-card Music tools                                                */
+/*  SD-card Video tools                                               */
 /* ------------------------------------------------------------------ */
 
-#ifdef CONFIG_SD_CARD_ENABLE
 void McpFeatureTools::RegisterSdVideoTools(VideoPlayer* video) {
     if (!video) return;
 
@@ -214,7 +214,14 @@ void McpFeatureTools::RegisterSdVideoTools(VideoPlayer* video) {
         "Tool này chỉ dùng khi người dùng nói rõ:\n"
         "- video trong thẻ nhớ / video offline / phát video trong thẻ / SD card\n"
         "\n"
-        "action = shuffle | repeat\n"
+        "action = play | pause | stop | next | prev | shuffle | repeat\n"
+        "  play:    bắt đầu phát video\n"
+        "  pause:   dừng tạm video\n"
+        "  stop:    dừng phát video\n"
+        "  next:    phát video tiếp theo\n"
+        "  prev:    phát video trước đó\n"
+        "  shuffle: phát ngẫu nhiên video từ thẻ\n"
+        "  repeat:  lặp lại video hiện tại hoặc toàn bộ danh sách\n"
         "Return: trạng thái điều khiển SD card.\n",
         PropertyList({
             Property("action", kPropertyTypeString),
@@ -227,28 +234,38 @@ void McpFeatureTools::RegisterSdVideoTools(VideoPlayer* video) {
                 return "{\"success\": false, \"message\": \"No video files found on SD card\"}";
             }
             ESP_LOGI(TAG, "[SdVideo] Setting mode: %s", action.c_str());
-            if (action == "shuffle" || action == "repeat") {
-                if (action == "shuffle") {
-                    // Pick a random video from the playlist
-                    auto& playlist = video->GetPlaylist();
-                    int random_idx = rand() % playlist.size();
-                    video->Play(playlist[random_idx].path);
-                    return "{\"success\": true, \"message\": \"Shuffle: playing random video\"}";
-                } else if (action == "repeat") {
-                    // Auto-play next video when one ends
-                    video->SetEndCallback([video](const std::string& /*finished_path*/) -> bool {
-                        // Return true to auto-play next video, false to stop after one video
-                        return video->Next(); // Loop through all videos in directory
-                    });
-                    video->Next();
-                }
-                return "{\"success\": true, \"message\": \"Repeat mode enabled, playing next video\"}";
+            if (action == "play") {
+                video->Play(video->GetPlaylist()[0].path);
+                return "{\"success\": true, \"message\": \"Playing first video\"}";
+            } else if (action == "pause") {
+                video->Pause();
+                return "{\"success\": true, \"message\": \"Video paused\"}";
+            } else if (action == "stop") {
+                video->Stop();
+                return "{\"success\": true, \"message\": \"Video stopped\"}";
+            } else if (action == "next") {
+                return video->Next() ? "{\"success\": true, \"message\": \"Playing next video\"}"
+                                     : "{\"success\": false, \"message\": \"No next video\"}";
+            } else if (action == "prev") {
+                return video->Prev() ? "{\"success\": true, \"message\": \"Playing previous video\"}"
+                                         : "{\"success\": false, \"message\": \"No previous video\"}";
+            } else if (action == "shuffle") {
+                auto& playlist = video->GetPlaylist();
+                int random_idx = rand() % playlist.size();
+                video->Play(playlist[random_idx].path);
+                return "{\"success\": true, \"message\": \"Shuffle: playing random video\"}";
+            } else if (action == "repeat") {
+                video->SetEndCallback([video](const std::string& /*finished_path*/) -> bool {
+                    return video->Next();
+                });
+                video->Next();
+                return "{\"success\": true, \"message\": \"Repeat mode enabled\"}";
             }
             return "{\"success\": false, \"message\": \"Unknown playback action\"}";
         });
 
-    mcp.AddTool("self.sdvideo.play_video",
-        "Play a video file from SD card. Use this tool when user requests to play a video file stored on SD card.\n"
+    mcp.AddTool("self.sdvideo.search_play",
+        "Search and play video by name from SD card.\n"
         "Args:\n"
         "  `video_name`: The name of the video file to play (e.g., 'demo.avi'). You can also specify part of the name.\n"
         "Return:\n"
@@ -276,6 +293,9 @@ void McpFeatureTools::RegisterSdVideoTools(VideoPlayer* video) {
         });
 }
 
+/* ------------------------------------------------------------------ */
+/*  SD-card music tools                                               */
+/* ------------------------------------------------------------------ */
 void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
     if (!sd_music) return;
 

@@ -460,6 +460,7 @@ void AudioStreamPlayer::PlayLoop()
         return;
     }
     if (!audio_codec_->output_enabled()) {
+        ESP_LOGW(TAG, "%s Enabling audio output for playback", __func__);
         audio_codec_->EnableOutput(true);
     }
 
@@ -568,6 +569,7 @@ void AudioStreamPlayer::OutputPcmDirect(int16_t* pcm_in, int total_samples,
 
     /* Ensure codec output is enabled */
     if (!audio_codec_->output_enabled()) {
+        ESP_LOGW(TAG, "%s Enabling audio output for playback", __func__);
         audio_codec_->EnableOutput(true);
     }
 

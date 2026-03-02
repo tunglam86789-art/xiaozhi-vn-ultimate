@@ -12,6 +12,10 @@
 #include <atomic>
 #include <memory>
 
+// Forward declarations for isolated components
+namespace music  { class MusicVisualizer; }
+namespace qrcode { class QRCodeDisplay; }
+
 #define PREVIEW_IMAGE_DURATION_MS 5000
 
 // Theme color structure
@@ -45,61 +49,18 @@ protected:
     lv_obj_t* chat_message_label_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
-    std::string ip_address_;
-	std::string music_info_;
 
     // Weather UI component
     std::unique_ptr<WeatherUI> weather_ui_;
-    
+
+    // Isolated feature components (owned by lcd_display, logic lives elsewhere)
+    std::unique_ptr<music::MusicVisualizer> music_visualizer_;
+    std::unique_ptr<qrcode::QRCodeDisplay>  qrcode_display_;
+
     void InitializeLcdThemes();
     void SetupUI();
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
-   
-    // FFT handling methods
-    void processAudioData();
-    void periodicUpdateTask();
-    static void periodicUpdateTaskWrapper(void* arg);
-    int16_t* final_pcm_data_fft = nullptr;
-    int16_t* audio_data_ = nullptr;
-    int16_t* frame_audio_data = nullptr;
-    uint32_t last_fft_update = 0;
-    bool fft_data_ready = false;
-    float* spectrum_data = nullptr;
-    int audio_display_last_update = 0;
-    std::atomic<bool> fft_task_should_stop = false;
-    TaskHandle_t fft_task_handle = nullptr;
-    float* fft_real;
-    float* fft_imag;
-    float* hanning_window_float;
-    uint16_t bar_max_hight_;
-    void compute(float* real, float* imag, int n, bool forward);
-    void drawSpectrumIfReady();
-    uint16_t get_bar_color(int x_pos);
-    void draw_spectrum(float *power_spectrum, int fft_size);
-    void draw_bar(int x, int y, int bar_width, int bar_height, uint16_t color, int bar_index);
-    void draw_block(int x, int y, int block_x_size, int block_y_size, uint16_t color, int bar_index);
-    uint16_t get_random_color();
-
-    // LVGL variables for FFT canvas or QR code
-    int canvas_width_;
-    int canvas_height_;
-    lv_obj_t* canvas_ = nullptr;
-    uint16_t* canvas_buffer_ = nullptr;
-    void create_canvas(int32_t status_bar_height = 0);
-	
-	lv_obj_t* music_root_        = nullptr;
-	lv_obj_t* music_date_label_  = nullptr;
-	lv_obj_t* music_title_label_ = nullptr;
-	lv_obj_t* music_bar_         = nullptr;   
-	lv_obj_t* music_time_left_   = nullptr;   
-	lv_obj_t* music_time_total_  = nullptr;  
-	lv_obj_t* music_subinfo_label_ = nullptr;
-	lv_obj_t* music_time_remain_ = nullptr;
-	lv_obj_t* music_next_line_ = nullptr;
-
-    // Qr code handling methods
-    bool qr_code_displayed_ = false;
 
     // Media overlay state (true = emoji/chat hidden for media content)
     bool media_overlay_active_ = false;
@@ -115,29 +76,29 @@ protected:
 public:
     ~LcdDisplay();
     virtual void SetEmotion(const char* emotion) override;
-    virtual void SetMusicInfo(const char* song_name) override;
-    DisplaySourceType DetectSourceFromInfo() override;
     virtual void SetChatMessage(const char* role, const char* content) override; 
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
 
-    // Add theme switching function
+    // Theme switching
     virtual void SetTheme(Theme* theme) override;
-
-    // FFT display methods
-    virtual void StopFFT() override;
-    virtual void StartFFT() override;
-    virtual void FeedAudioDataFFT(int16_t* data, size_t sample_count) override;
-    virtual int16_t* MakeAudioBuffFFT(size_t sample_count) override;
-    virtual void ReleaseAudioBuffFFT(int16_t* buffer = nullptr) override;
 
     /** Show/hide the media overlay (hides emoji + chat for FFT/video). */
     virtual void SetMediaOverlayActive(bool active) override;
 
-    // QR code display methods
+    /** Update music info — delegates to music_visualizer_ when running. */
+    virtual void SetMusicInfo(const char* song_name) override;
+
+    /** Detect music source — delegates to music_visualizer_. */
+    virtual DisplaySourceType DetectSourceFromInfo() override;
+
+    // QR code display methods (delegates to qrcode_display_)
     virtual void DisplayQRCode(const uint8_t* qrcode, const char* text = nullptr) override;
     virtual void ClearQRCode() override;
     virtual bool QRCodeIsSupported() override;
     virtual void SetIpAddress(const std::string& ip_address) override;
+
+    /** Get the music visualizer component. */
+    music::MusicVisualizer* GetMusicVisualizer() { return music_visualizer_.get(); }
 
     // Rotate lcd display
     virtual bool SetRotation(int rotation_degree, bool save_setting) override;

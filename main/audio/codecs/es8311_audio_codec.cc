@@ -178,6 +178,7 @@ void Es8311AudioCodec::EnableOutput(bool enable) {
     if (enable == output_enabled_) {
         return;
     }
+    ESP_LOGW(TAG, "Set output enable to %s", enable ? "true" : "false");
     AudioCodec::EnableOutput(enable);
     UpdateDeviceState();
 }
