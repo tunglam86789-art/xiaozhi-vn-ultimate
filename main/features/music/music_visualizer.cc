@@ -64,7 +64,9 @@ bool MusicVisualizer::Start(const VisualizerConfig& cfg, const MusicInfo& initia
     }
 
     // Periodic callback for music UI updates (every 1 s, LVGL lock held by manager)
-    spectrum_mgr_->SetPeriodicCallback([this]() { UpdateMusicUI(); }, 1000);
+    spectrum_mgr_->SetPeriodicCallback([this]() {
+        UpdateMusicUI(); 
+    }, 1000);
 
     // Start spectrum (canvas + task)
     if (!spectrum_mgr_->Start()) {
@@ -207,7 +209,7 @@ void MusicVisualizer::BuildMusicUI(const MusicInfo& info) {
     // Title + sub-info strings
     std::string title_str = info.title;
     std::string sub_str   = info.sub_info;
-    bool show_progress    = (info.duration_ms > 0);
+    show_progress_    = (info.duration_ms > 0);
 
     if (title_str.empty()) {
         switch (info.source) {
@@ -248,7 +250,7 @@ void MusicVisualizer::BuildMusicUI(const MusicInfo& info) {
     music_subinfo_label_ = sub;
 
     // Progress bar (only when duration is known)
-    if (show_progress) {
+    if (show_progress_) {
         lv_obj_t* bar = lv_bar_create(music_root_);
         lv_obj_set_size(bar, w - (pad_side * 2), 4);
         lv_obj_align_to(bar, sub, LV_ALIGN_OUT_BOTTOM_LEFT, -icon_w - pad_side, 12);
@@ -330,8 +332,21 @@ void MusicVisualizer::UpdateMusicUI() {
     if (!info_provider_) return;
     MusicInfo info = info_provider_();
 
+    if (!show_progress_ && info.duration_ms > 0) {
+        ESP_LOGI(TAG, "Switching to progress mode (duration_ms=%lld)", info.duration_ms);
+        // Switch to progress mode: destroy and rebuild the UI with a progress bar
+        if (lvgl_port_lock(3000)) {
+            DestroyMusicUI();
+            BuildMusicUI(info);
+            lvgl_port_unlock();
+        }
+        show_progress_ = true;
+        return;
+    }
+
     // Update title
     if (music_title_label_ && lv_obj_is_valid(music_title_label_) && !info.title.empty()) {
+        ESP_LOGI(TAG, "Updating title: '%s'", info.title.c_str());
         lv_label_set_text(music_title_label_, info.title.c_str());
     }
 
@@ -344,6 +359,7 @@ void MusicVisualizer::UpdateMusicUI() {
             sub = buf;
         }
         if (!sub.empty()) {
+            ESP_LOGI(TAG, "Updating sub-info: '%s'", sub.c_str());
             lv_label_set_text(music_subinfo_label_, sub.c_str());
             lv_label_set_long_mode(music_subinfo_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
             int cw = spectrum_mgr_ ? spectrum_mgr_->GetConfig().canvas_width : config_.canvas_width;
@@ -353,6 +369,7 @@ void MusicVisualizer::UpdateMusicUI() {
 
     // Update progress bar + time labels
     if (music_bar_ && lv_obj_is_valid(music_bar_) && info.duration_ms > 0) {
+        ESP_LOGI(TAG, "Updating progress: pos=%lldms dur=%lldms", info.position_ms, info.duration_ms);
         lv_bar_set_range(music_bar_, 0, info.duration_ms);
         lv_bar_set_value(music_bar_, info.position_ms, LV_ANIM_OFF);
 
@@ -369,6 +386,7 @@ void MusicVisualizer::UpdateMusicUI() {
     // Update next track
     if (music_next_line_ && lv_obj_is_valid(music_next_line_) && !info.next_track.empty()) {
         char nb[128];
+        ESP_LOGI(TAG, "Updating next track: '%s'", info.next_track.c_str());
         snprintf(nb, sizeof(nb), "Next: %s", info.next_track.c_str());
         lv_label_set_text(music_next_line_, nb);
     }

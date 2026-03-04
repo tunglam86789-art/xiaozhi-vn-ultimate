@@ -1455,6 +1455,10 @@ music::MusicInfo Application::BuildMusicInfo() {
         } else if (!tracks.empty()) {
             info.next_track = tracks[0].name;
         }
+
+        ESP_LOGI(TAG, "BuildMusicInfo: SD card track='%s' pos=%lldms dur=%lldms bitrate=%dkbps next='%s'",
+                 info.title.c_str(), info.position_ms, info.duration_ms, info.bitrate_kbps, info.next_track.c_str());
+
         return info;
     }
 

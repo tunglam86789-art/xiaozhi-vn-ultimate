@@ -1574,8 +1574,8 @@ void Esp32SdMusic::OnStreamInfoReady(int sample_rate, int bits_per_sample,
                 }
                 track.duration_ms  = (int)total_duration_ms_.load();
                 track.bitrate_kbps = bitrate;
-                ESP_LOGI(TAG, "Updated track duration: %d ms, bitrate: %d kbps",
-                         track.duration_ms, track.bitrate_kbps);
+                ESP_LOGI(TAG, "Updated track duration: %d ms, bitrate: %d kbps, total duration: %lld ms",
+                         track.duration_ms, track.bitrate_kbps, total_duration_ms_.load());
             }
         }
     }
