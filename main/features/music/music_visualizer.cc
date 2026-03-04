@@ -346,7 +346,7 @@ void MusicVisualizer::UpdateMusicUI() {
 
     // Update title
     if (music_title_label_ && lv_obj_is_valid(music_title_label_) && !info.title.empty()) {
-        ESP_LOGI(TAG, "Updating title: '%s'", info.title.c_str());
+        // ESP_LOGI(TAG, "Updating title: '%s'", info.title.c_str());
         lv_label_set_text(music_title_label_, info.title.c_str());
     }
 
@@ -359,7 +359,7 @@ void MusicVisualizer::UpdateMusicUI() {
             sub = buf;
         }
         if (!sub.empty()) {
-            ESP_LOGI(TAG, "Updating sub-info: '%s'", sub.c_str());
+            // ESP_LOGI(TAG, "Updating sub-info: '%s'", sub.c_str());
             lv_label_set_text(music_subinfo_label_, sub.c_str());
             lv_label_set_long_mode(music_subinfo_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
             int cw = spectrum_mgr_ ? spectrum_mgr_->GetConfig().canvas_width : config_.canvas_width;
@@ -369,7 +369,7 @@ void MusicVisualizer::UpdateMusicUI() {
 
     // Update progress bar + time labels
     if (music_bar_ && lv_obj_is_valid(music_bar_) && info.duration_ms > 0) {
-        ESP_LOGI(TAG, "Updating progress: pos=%lldms dur=%lldms", info.position_ms, info.duration_ms);
+        // ESP_LOGI(TAG, "Updating progress: pos=%lldms dur=%lldms", info.position_ms, info.duration_ms);
         lv_bar_set_range(music_bar_, 0, info.duration_ms);
         lv_bar_set_value(music_bar_, info.position_ms, LV_ANIM_OFF);
 
@@ -386,7 +386,7 @@ void MusicVisualizer::UpdateMusicUI() {
     // Update next track
     if (music_next_line_ && lv_obj_is_valid(music_next_line_) && !info.next_track.empty()) {
         char nb[128];
-        ESP_LOGI(TAG, "Updating next track: '%s'", info.next_track.c_str());
+        // ESP_LOGI(TAG, "Updating next track: '%s'", info.next_track.c_str());
         snprintf(nb, sizeof(nb), "Next: %s", info.next_track.c_str());
         lv_label_set_text(music_next_line_, nb);
     }

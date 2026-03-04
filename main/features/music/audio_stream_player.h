@@ -206,6 +206,12 @@ public:
     void  ResumeStream();
     bool  IsPaused() const { return is_paused_.load(); }
 
+    /** Get current playback time in milliseconds (public). */
+    int64_t GetPlayTimeMs() const { return current_play_time_ms_; }
+
+    /** Get total content length in bytes (from HTTP Content-Length). 0 if unknown. */
+    size_t GetContentLength() const { return content_length_; }
+
     void SetDisplayMode(DisplayMode mode);
     DisplayMode GetDisplayMode() const { return display_mode_.load(); }
 
@@ -250,9 +256,6 @@ protected:
     /** Push data into the playback buffer (copies to PSRAM). Thread-safe.
      *  Returns false if stopped or allocation failed. */
     bool PushToBuffer(const void* data, size_t size);
-
-    /** Get current playback time in milliseconds. */
-    int64_t GetPlayTimeMs() const { return current_play_time_ms_; }
 
     /** Get decoder type for the current stream. */
     AudioDecoderType GetDecoderType() const { return decoder_type_; }
@@ -354,6 +357,9 @@ private:
 
     /* ---- Source path / URL ---- */
     std::string stream_url_;
+
+    /* ---- Content info (from HTTP) ---- */
+    size_t content_length_ = 0;   ///< Total bytes from Content-Length header
 };
 
 #endif // AUDIO_STREAM_PLAYER_H

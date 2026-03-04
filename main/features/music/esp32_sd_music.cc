@@ -1568,9 +1568,7 @@ void Esp32SdMusic::OnStreamInfoReady(int sample_rate, int bits_per_sample,
             if (current_index_ >= 0 && current_index_ < (int)playlist_.size()) {
                 auto &track = playlist_[current_index_];
                 if (track.file_size > 0 && bitrate > 0) {
-                    total_duration_ms_ =
-                        (int64_t)track.file_size * 8LL * 1000LL /
-                        (bitrate * 1000LL);
+                    total_duration_ms_ = (int64_t)track.file_size * 8LL / bitrate;
                 }
                 track.duration_ms  = (int)total_duration_ms_.load();
                 track.bitrate_kbps = bitrate;

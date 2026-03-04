@@ -65,6 +65,13 @@ public:
     /** Get music server URL from settings (or default). */
     std::string GetCheckMusicServerUrl();
 
+    /* ---- Metadata getters (for BuildMusicInfo) ---- */
+    std::string GetTitle() const;
+    std::string GetArtist() const;
+    int64_t     GetPositionMs() const  { return AudioStreamPlayer::GetPlayTimeMs(); }
+    int64_t     GetDurationMs() const  { return duration_ms_; }
+    int         GetBitrateKbps() const { return bitrate_kbps_; }
+
 protected:
     /* ---- AudioStreamPlayer hooks ---- */
     void OnPrepareHttp(void* http_ptr) override;
@@ -96,6 +103,8 @@ private:
 
     bool song_name_displayed_;
     bool full_info_displayed_;
+    int  bitrate_kbps_ = 0;       ///< Bitrate (kbps) from decoder
+    int64_t duration_ms_ = 0;     ///< Duration (ms) from API
 
     /* ---- Lyrics ---- */
     LyricManager lyric_mgr_;

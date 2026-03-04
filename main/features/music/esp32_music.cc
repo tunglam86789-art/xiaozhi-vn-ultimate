@@ -219,11 +219,21 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
     cJSON* j_title    = cJSON_GetObjectItem(root, "title");
     cJSON* j_audio    = cJSON_GetObjectItem(root, "audio_url");
     cJSON* j_lyric    = cJSON_GetObjectItem(root, "lyric_url");
+    cJSON* j_duration = cJSON_GetObjectItem(root, "duration");
 
     if (cJSON_IsString(j_artist)) artist_name_ = j_artist->valuestring;
     if (cJSON_IsString(j_title))  title_name_  = j_title->valuestring;
+    if (cJSON_IsNumber(j_duration)) {
+        duration_ms_ = static_cast<int64_t>(j_duration->valuedouble * 1000);
+        ESP_LOGI(TAG, "Duration from API: %lld ms", duration_ms_);
+    } else {
+        duration_ms_ = 0;
+    }
+    bitrate_kbps_ = 0;  // reset — will be set by OnStreamInfoReady
 
     ESP_LOGI(TAG, "Song: %s | Artist: %s", title_name_.c_str(), artist_name_.c_str());
+    ESP_LOGI(TAG, "Audio URL: %s", cJSON_IsString(j_audio) ? j_audio->valuestring : "N/A");
+    // ESP_LOGI(TAG, "Lyric URL: %s", cJSON_IsString(j_lyric) ? j_lyric->valuestring : "N/A");
 
     /* Validate audio URL */
     if (!cJSON_IsString(j_audio) || !j_audio->valuestring || strlen(j_audio->valuestring) == 0) {
@@ -234,12 +244,20 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
 
     /* Build audio URL */
     std::string audio_path = j_audio->valuestring;
-    if (audio_path.find("?") != std::string::npos) {
+    if (audio_path.find("?") != std::string::npos && audio_path.find("/mp3/") == std::string::npos) {
         size_t qpos = audio_path.find("?");
         current_music_url_ = BuildUrlWithParams(base_url,
                                                 audio_path.substr(0, qpos),
                                                 audio_path.substr(qpos + 1));
     } else {
+        // audio_path": "/mp3/proxy/stream?url=https%3A%2F%2Fa128
+        // fallback: strip /mp3/ prefix if present to support older API versions
+        // ESP_LOGI(TAG, "Audio path before processing: '%s'", audio_path.c_str());
+        if (audio_path.find("/mp3/") != std::string::npos) {
+            ESP_LOGI(TAG, "Stripping '/mp3/' prefix from audio path for compatibility");
+            audio_path = audio_path.substr(audio_path.find("/mp3/") + 4);
+        }
+        // ESP_LOGI(TAG, "Final audio path: '%s'", audio_path.c_str());
         current_music_url_ = base_url + audio_path;
     }
 
@@ -326,6 +344,19 @@ void Esp32Music::OnStreamInfoReady(int sample_rate, int bits_per_sample, int cha
 {
     if (full_info_displayed_) return;
 
+    bitrate_kbps_ = bitrate;
+
+    /* Estimate duration from Content-Length + bitrate if not set by API */
+    if (duration_ms_ <= 0 && bitrate_kbps_ > 0) {
+        size_t content_len = GetContentLength();
+        if (content_len > 0) {
+            duration_ms_ = static_cast<int64_t>(content_len) * 8 / bitrate_kbps_;
+            ESP_LOGI(TAG, "Estimated duration from Content-Length: %lld ms "
+                     "(content=%zu bytes, bitrate=%d kbps)",
+                     duration_ms_, content_len, bitrate_kbps_);
+        }
+    }
+
     ESP_LOGI(TAG, "Stream info: %d Hz, %d bit, %d ch, %d kbps, %d frame size", sample_rate, bits_per_sample, channels, bitrate, frame_size);
     full_info_displayed_ = true;
 }
@@ -360,4 +391,19 @@ std::string Esp32Music::GetCheckMusicServerUrl()
         url = DEFAULT_MUSIC_URL;
     }
     return url;
+}
+
+/* ================================================================== */
+/*  Metadata getters                                                  */
+/* ================================================================== */
+
+std::string Esp32Music::GetTitle() const
+{
+    if (!title_name_.empty()) return title_name_;
+    return current_song_name_;
+}
+
+std::string Esp32Music::GetArtist() const
+{
+    return artist_name_;
 }

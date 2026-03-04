@@ -93,6 +93,7 @@ bool AudioStreamPlayer::StartStream(const std::string& source, AudioDecoderType 
     current_play_time_ms_ = 0;
     total_frames_decoded_ = 0;
     buffer_size_          = 0;
+    content_length_       = 0;
 
     ClearAudioBuffer();
 
@@ -338,6 +339,10 @@ void AudioStreamPlayer::SourceDataLoop(const std::string& source)
 
     ESP_LOGI(TAG, "HTTP connected, status=%d", status);
 
+    /* Capture content length for duration estimation */
+    content_length_ = http->GetBodyLength();
+    ESP_LOGI(TAG, "Content-Length: %zu bytes", content_length_);
+
     char* buf = (char*)heap_caps_malloc(AUDIO_HTTP_CHUNK_SIZE, MALLOC_CAP_SPIRAM);
     if (!buf) {
         ESP_LOGE(TAG, "Read buffer alloc failed");
@@ -488,6 +493,7 @@ void AudioStreamPlayer::PlayLoop()
         ClearAudioBuffer();
         ResetSampleRate();
         OnPlaybackFinished();
+        SetPlayerState(AudioPlayerState::Idle);
     }
 
     ESP_LOGI(TAG, "PlayLoop finished");
@@ -613,7 +619,7 @@ void AudioStreamPlayer::SetPlayerState(AudioPlayerState new_state)
 {
     AudioPlayerState old_state = player_state_.exchange(new_state);
     if (old_state != new_state) {
-        ESP_LOGD(TAG, "AudioPlayerState: %d -> %d",
+        ESP_LOGW(TAG, "AudioPlayerState: %d -> %d",
                  static_cast<int>(old_state), static_cast<int>(new_state));
         if (state_callback_) {
             state_callback_(old_state, new_state);

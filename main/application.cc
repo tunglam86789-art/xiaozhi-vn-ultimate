@@ -1456,18 +1456,38 @@ music::MusicInfo Application::BuildMusicInfo() {
             info.next_track = tracks[0].name;
         }
 
-        ESP_LOGI(TAG, "BuildMusicInfo: SD card track='%s' pos=%lldms dur=%lldms bitrate=%dkbps next='%s'",
-                 info.title.c_str(), info.position_ms, info.duration_ms, info.bitrate_kbps, info.next_track.c_str());
+        // ESP_LOGI(TAG, "BuildMusicInfo: SD card track='%s' pos=%lldms dur=%lldms bitrate=%dkbps next='%s'",
+        //          info.title.c_str(), info.position_ms, info.duration_ms, info.bitrate_kbps, info.next_track.c_str());
 
         return info;
     }
 
     // 2. Online music player
     if (music_ && music_->IsPlaying()) {
-        info.source     = music::SourceType::ONLINE;
-        info.is_playing = true;
-        info.title      = "Music Online";
-        info.sub_info   = "Playing...";
+        info.source       = music::SourceType::ONLINE;
+        info.is_playing   = true;
+        info.title        = music_->GetTitle();
+        info.position_ms  = music_->GetPositionMs();
+        info.duration_ms  = music_->GetDurationMs();
+        info.bitrate_kbps = music_->GetBitrateKbps();
+
+        std::string artist = music_->GetArtist();
+        if (!artist.empty()) {
+            if (info.bitrate_kbps > 0) {
+                char sub[96];
+                snprintf(sub, sizeof(sub), "%s  •  %d kbps", artist.c_str(), info.bitrate_kbps);
+                info.sub_info = sub;
+            } else {
+                info.sub_info = artist;
+            }
+        } else if (info.bitrate_kbps > 0) {
+            info.sub_info = std::to_string(info.bitrate_kbps) + " kbps";
+        } else {
+            info.sub_info = "Streaming...";
+        }
+
+        // ESP_LOGI(TAG, "BuildMusicInfo: Online track='%s' artist='%s' pos=%lldms dur=%lldms bitrate=%dkbps",
+        //          info.title.c_str(), artist.c_str(), info.position_ms, info.duration_ms, info.bitrate_kbps);
         return info;
     }
 
