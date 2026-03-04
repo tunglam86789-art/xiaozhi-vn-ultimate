@@ -37,6 +37,9 @@ struct SpectrumConfig {
     int status_bar_h        = 24;    ///< Status bar height (pixels) — for UI layout fallback
     int bar_max_height      = 0;     ///< Max bar height (0 = canvas_height / 2)
 
+    // ---- Display Mode ----
+    bool monochrome         = false; ///< true for I1 (1-bit OLED); false for RGB565 (LCD)
+
     // ---- Timing Parameters ----
     int refresh_rate_hz             = 30;  ///< LVGL refresh rate for spectrum (Hz)
     int audio_process_interval_ms   = 10;  ///< Audio processing interval (ms)

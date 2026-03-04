@@ -91,9 +91,13 @@ private:
     // ---- Configuration ----
     SpectrumConfig config_;
 
+    // ---- Monochrome helpers ----
+    void DrawBlockMono(int x, int y, int block_w, int block_h);
+    int  GetMonoStride() const { return (config_.canvas_width + 7) / 8; }
+
     // ---- LVGL objects ----
-    lv_obj_t*  canvas_        = nullptr;
-    uint16_t*  canvas_buffer_ = nullptr;
+    lv_obj_t* canvas_        = nullptr;
+    void*     canvas_buffer_ = nullptr;   // uint16_t* (RGB565) or uint8_t* (I1)
 
     // ---- Falling-block animation state (per bar) ----
     std::vector<int>      current_heights_;

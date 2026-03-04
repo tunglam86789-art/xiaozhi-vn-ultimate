@@ -16,10 +16,10 @@
 #include "wifi_station.h"
 #include "system_info.h"
 #include "display.h"
+#include "features/QRCode/qrcode_display.h"
 
 #include <esp_log.h>
 #include <cJSON.h>
-#include <qrcode.h>
 #include <algorithm>
 #include <cstring>
 
@@ -31,14 +31,13 @@
 
 void McpFeatureTools::RegisterIp2QrCodeTool() {
     auto& mcp = McpServer::GetInstance();
-    auto& board = Board::GetInstance();
 
     mcp.AddTool("self.network.ip2qrcode",
         "Print the QR code of the IP address connected to WiFi network.\n"
         "Use this tool when user asks about network connection, IP address and print QR code.\n"
-        "Returns the new IP address, SSID, and connection status. Also displays IP address as QR code on LCD screen.",
+        "Returns the new IP address, SSID, and connection status. Also displays IP address as QR code on screen.",
         PropertyList(),
-        [&board](const PropertyList& /*properties*/) -> ReturnValue {
+        [](const PropertyList& /*properties*/) -> ReturnValue {
             auto& wifi_station = WifiStation::GetInstance();
             ESP_LOGI(TAG, "Getting network status for IP address tool");
             cJSON* json = cJSON_CreateObject();
@@ -53,35 +52,22 @@ void McpFeatureTools::RegisterIp2QrCodeTool() {
                 cJSON_AddStringToObject(json, "mac_address", SystemInfo::GetMacAddress().c_str());
                 cJSON_AddStringToObject(json, "status", "connected");
 
-                auto display = board.GetDisplay();
-                if (display) {
-                    ESP_LOGI(TAG, "Generating QR code for IP address: %s", ip_address.c_str());
-                    if (display->QRCodeIsSupported()) {
-                        ip_address += "/ota";
-                        display->SetIpAddress(ip_address);
-                        static Display* s_display = display;
-                        esp_qrcode_config_t qrcode_cfg = {
-                            .display_func = [](esp_qrcode_handle_t qrcode) {
-                                if (s_display && qrcode) {
-                                    s_display->DisplayQRCode(qrcode, nullptr);
-                                }
-                            },
-                            .max_qrcode_version = 10,
-                            .qrcode_ecc_level = ESP_QRCODE_ECC_MED
-                        };
-                        std::string qr_text = "http://" + ip_address;
-                        esp_err_t err = esp_qrcode_generate(&qrcode_cfg, qr_text.c_str());
-                        if (err == ESP_OK) {
-                            ESP_LOGI(TAG, "QR code generated for IP: %s", ip_address.c_str());
-                            cJSON_AddBoolToObject(json, "qrcode_displayed", true);
-                        } else {
-                            ESP_LOGE(TAG, "Failed to generate QR code");
-                            cJSON_AddBoolToObject(json, "qrcode_displayed", false);
-                        }
-                    } else {
-                        display->SetChatMessage("assistant", ip_address.c_str());
-                        vTaskDelay(pdMS_TO_TICKS(5000));
-                        cJSON_AddBoolToObject(json, "qrcode_displayed", false);
+                // Use standalone QRCode feature module
+                std::string ota_path = ip_address + "/ota";
+                std::string qr_url  = "http://" + ota_path;
+
+                auto& qr = qrcode::QRCodeDisplay::GetInstance();
+                bool ok = qr.Show(qr_url, ota_path);
+                cJSON_AddBoolToObject(json, "qrcode_displayed", ok);
+
+                if (ok) {
+                    ESP_LOGI(TAG, "QR code displayed for IP: %s", ip_address.c_str());
+                } else {
+                    ESP_LOGE(TAG, "Failed to display QR code");
+                    // Fallback: show IP in chat message
+                    auto display = Board::GetInstance().GetDisplay();
+                    if (display) {
+                        display->SetChatMessage("assistant", ota_path.c_str());
                     }
                 }
             } else {
@@ -586,7 +572,7 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
         "Return: JSON báo thành công / thất bại.",
         PropertyList(),
         [sd_music](const PropertyList&) -> ReturnValue {
-            if (!sd_music->rebuildPlaylistFromSd()) {
+            if (sd_music->rebuildPlaylistFromSd()) {
                 return "{\"success\": false, \"message\": \"Failed to rescan SD card\"}";
             }
             return "{\"success\": true, \"message\": \"SD playlist reloaded\"}";

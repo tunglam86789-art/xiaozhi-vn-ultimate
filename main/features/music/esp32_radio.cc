@@ -256,10 +256,10 @@ std::vector<std::string> Esp32Radio::GetStationList() const
 /*  AudioStreamPlayer hooks                                           */
 /* ================================================================== */
 
-void Esp32Radio::OnStreamInfoReady(int sample_rate, int bits_per_sample, int channels)
+void Esp32Radio::OnStreamInfoReady(int sample_rate, int bits_per_sample, int channels, int bitrate, int frame_size)
 {
-    ESP_LOGI(TAG, "Stream info: %s, %d Hz, %d bit, %d ch",
-             current_station_name_.c_str(), sample_rate, bits_per_sample, channels);
+    ESP_LOGI(TAG, "Stream info: %s, %d Hz, %d bit, %d ch, %d kbps, %d frame size",
+             current_station_name_.c_str(), sample_rate, bits_per_sample, channels, bitrate, frame_size);
 }
 
 void Esp32Radio::OnDisplayReady()

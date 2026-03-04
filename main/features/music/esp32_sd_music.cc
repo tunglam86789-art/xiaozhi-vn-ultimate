@@ -1193,6 +1193,9 @@ bool Esp32SdMusic::loadPlaylistFromFile(const std::string& playlist_path,
         t.cover_size = 0;
         t.cover_mime.clear();
 
+        // ESP_LOGI(TAG, "Loaded track from playlist: %s (path: %s, size: %zu bytes, track_number: %d, duration_ms: %d, bitrate_kbps: %d)",
+        //          t.name.c_str(), t.path.c_str(), t.file_size, t.track_number, t.duration_ms, t.bitrate_kbps);
+
         out.push_back(std::move(t));
     }
 
@@ -1344,6 +1347,10 @@ bool Esp32SdMusic::play()
     }
 
     ESP_LOGI(TAG, "Playing: %s", track.path.c_str());
+    ESP_LOGI(TAG, "Track info: name='%s', title='%s', artist='%s', album='%s', genre='%s', duration=%d ms, bitrate=%d kbps, file_size=%zu bytes",
+             track.name.c_str(), track.title.c_str(), track.artist.c_str(),
+             track.album.c_str(), track.genre.c_str(), track.duration_ms,
+             track.bitrate_kbps, track.file_size);
 
     // Detect file format
     AudioDecoderType dec_type = DetectFileFormat(track.path);
@@ -1549,25 +1556,27 @@ void Esp32SdMusic::SourceDataLoop(const std::string& source)
 }
 
 void Esp32SdMusic::OnStreamInfoReady(int sample_rate, int bits_per_sample,
-                                      int channels)
+                                      int channels, int bitrate, int frame_size)
 {
-    ESP_LOGI(TAG, "Stream info: %d Hz, %d-bit, %d ch",
-             sample_rate, bits_per_sample, channels);
+    ESP_LOGI(TAG, "Stream info: %d Hz, %d-bit, %d ch, %d kbps, %d frame size",
+             sample_rate, bits_per_sample, channels, bitrate, frame_size);
 
     // Estimate duration for compressed formats
     if (GetDecoderType() != AudioDecoderType::WAV) {
-        TrackInfo track;
         {
             std::lock_guard<std::mutex> lock(playlist_mutex_);
             if (current_index_ >= 0 && current_index_ < (int)playlist_.size()) {
-                track = playlist_[current_index_];
+                auto &track = playlist_[current_index_];
+                if (track.file_size > 0 && bitrate > 0) {
+                    total_duration_ms_ =
+                        (int64_t)track.file_size * 8LL * 1000LL /
+                        (bitrate * 1000LL);
+                }
+                track.duration_ms  = (int)total_duration_ms_.load();
+                track.bitrate_kbps = bitrate;
+                ESP_LOGI(TAG, "Updated track duration: %d ms, bitrate: %d kbps",
+                         track.duration_ms, track.bitrate_kbps);
             }
-        }
-
-        if (track.file_size > 0 && track.bitrate_kbps > 0) {
-            total_duration_ms_ =
-                (int64_t)track.file_size * 8LL * 1000LL /
-                (track.bitrate_kbps * 1000LL);
         }
     }
 }

@@ -321,11 +321,12 @@ void Esp32Music::OnPrepareHttp(void* http_ptr)
     }
 }
 
-void Esp32Music::OnStreamInfoReady(int sample_rate, int bits_per_sample, int channels)
+void Esp32Music::OnStreamInfoReady(int sample_rate, int bits_per_sample, int channels,
+                                  int bitrate, int frame_size)
 {
     if (full_info_displayed_) return;
 
-    ESP_LOGI(TAG, "Stream info: %d Hz, %d bit, %d ch", sample_rate, bits_per_sample, channels);
+    ESP_LOGI(TAG, "Stream info: %d Hz, %d bit, %d ch, %d kbps, %d frame size", sample_rate, bits_per_sample, channels, bitrate, frame_size);
     full_info_displayed_ = true;
 }
 

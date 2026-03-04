@@ -76,7 +76,7 @@ public:
 
 protected:
     /* ---- AudioStreamPlayer hooks ---- */
-    void OnStreamInfoReady(int sample_rate, int bits_per_sample, int channels) override;
+    void OnStreamInfoReady(int sample_rate, int bits_per_sample, int channels, int bitrate, int frame_size) override;
     void OnDisplayReady() override;
     void OnPlaybackFinished() override;
 

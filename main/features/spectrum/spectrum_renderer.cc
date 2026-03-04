@@ -56,19 +56,34 @@ bool SpectrumRenderer::CreateCanvas(lv_obj_t* parent) {
     const int w = config_.canvas_width;
     const int h = config_.canvas_height;
 
-    // Allocate RGB565 pixel buffer in SPIRAM
-    canvas_buffer_ = static_cast<uint16_t*>(
-        heap_caps_malloc(w * h * sizeof(uint16_t), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM));
-    if (!canvas_buffer_) {
-        ESP_LOGE(TAG, "Failed to allocate canvas buffer (%dx%d)", w, h);
-        return false;
+    lv_color_format_t fmt;
+
+    if (config_.monochrome) {
+        // I1 (1-bit) — suitable for OLED SSD1306 / SH1107 displays
+        size_t buf_size = LV_CANVAS_BUF_SIZE(w, h, 1, LV_COLOR_FORMAT_I1);
+        canvas_buffer_ = heap_caps_malloc(buf_size, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+        if (!canvas_buffer_) {
+            ESP_LOGE(TAG, "Failed to allocate mono canvas buffer (%dx%d)", w, h);
+            return false;
+        }
+        memset(canvas_buffer_, 0, buf_size);
+        fmt = LV_COLOR_FORMAT_I1;
+    } else {
+        // RGB565 — LCD displays
+        canvas_buffer_ = heap_caps_malloc(w * h * sizeof(uint16_t),
+                                          MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+        if (!canvas_buffer_) {
+            ESP_LOGE(TAG, "Failed to allocate canvas buffer (%dx%d)", w, h);
+            return false;
+        }
+        memset(canvas_buffer_, 0, w * h * sizeof(uint16_t));
+        fmt = LV_COLOR_FORMAT_RGB565;
     }
-    std::fill_n(canvas_buffer_, w * h, COLOR_BLACK);
 
     // Create LVGL canvas
     lv_obj_t* par = parent ? parent : lv_scr_act();
     canvas_ = lv_canvas_create(par);
-    lv_canvas_set_buffer(canvas_, canvas_buffer_, w, h, LV_COLOR_FORMAT_RGB565);
+    lv_canvas_set_buffer(canvas_, canvas_buffer_, w, h, fmt);
     lv_obj_set_pos(canvas_, config_.canvas_x, config_.canvas_y);
     lv_obj_set_size(canvas_, w, h);
 
@@ -79,8 +94,9 @@ bool SpectrumRenderer::CreateCanvas(lv_obj_t* parent) {
     lv_canvas_fill_bg(canvas_, lv_color_make(0, 0, 0), LV_OPA_COVER);
     lv_obj_move_foreground(canvas_);
 
-    ESP_LOGI(TAG, "Canvas created (%dx%d at %d,%d)", w, h,
-             config_.canvas_x, config_.canvas_y);
+    ESP_LOGI(TAG, "Canvas created (%dx%d at %d,%d, %s)", w, h,
+             config_.canvas_x, config_.canvas_y,
+             config_.monochrome ? "I1" : "RGB565");
     return true;
 }
 
@@ -158,8 +174,13 @@ void SpectrumRenderer::Render(const float* power_spectrum, int spectrum_size) {
         magnitude[bin] = std::max(MIN_DB, std::min(MAX_DB, magnitude[bin]));
     }
 
-    // ---- 3. Clear canvas to black ----
-    std::fill_n(canvas_buffer_, w * h, COLOR_BLACK);
+    // ---- 3. Clear canvas ----
+    if (config_.monochrome) {
+        const int stride = GetMonoStride();
+        memset(canvas_buffer_, 0, stride * h);
+    } else {
+        std::fill_n(static_cast<uint16_t*>(canvas_buffer_), w * h, COLOR_BLACK);
+    }
 
     // ---- 4. Draw bars (skip DC bar at index 0) ----
     for (int k = 1; k < bar_total; k++) {
@@ -168,7 +189,7 @@ void SpectrumRenderer::Render(const float* power_spectrum, int spectrum_size) {
         mag = std::max(0.0f, std::min(1.0f, mag));
 
         int bar_height = static_cast<int>(mag * bar_max_h);
-        uint16_t color = GetBarColor(k);
+        uint16_t color = config_.monochrome ? 0xFFFF : GetBarColor(k);
         DrawBar(x_pos, h - 1, bar_width, bar_height, color, k - 1);
     }
 }
@@ -180,14 +201,19 @@ void SpectrumRenderer::Render(const float* power_spectrum, int spectrum_size) {
 void SpectrumRenderer::Invalidate() {
     if (!canvas_) return;
 
-    // Only refresh the spectrum area (bottom portion of the canvas)
-    lv_area_t lcd_area;
-    lcd_area.x1 = 0;
-    lcd_area.y1 = config_.lcd_height - config_.GetBarMaxHeight();
-    lcd_area.x2 = config_.canvas_width - 1;
-    lcd_area.y2 = config_.lcd_height - 1;
-    // Note: this api will allow LVGL update the canvas data to be visible on area of the screen (not area of the canvas).
-    lv_obj_invalidate_area(canvas_, &lcd_area);
+    if (config_.monochrome) {
+        // OLED canvas is small — just invalidate the whole object
+        lv_obj_invalidate(canvas_);
+    } else {
+        // Only refresh the spectrum area (bottom portion of the canvas)
+        lv_area_t lcd_area;
+        lcd_area.x1 = 0;
+        lcd_area.y1 = config_.lcd_height - config_.GetBarMaxHeight();
+        lcd_area.x2 = config_.canvas_width - 1;
+        lcd_area.y2 = config_.lcd_height - 1;
+        // Note: this api will allow LVGL update the canvas data to be visible on area of the screen (not area of the canvas).
+        lv_obj_invalidate_area(canvas_, &lcd_area);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -196,12 +222,13 @@ void SpectrumRenderer::Invalidate() {
 
 void SpectrumRenderer::DrawBar(int x, int y, int bar_width, int bar_height,
                                uint16_t color, int bar_index) {
-    static constexpr int BLOCK_SPACE  = 2;
-    const int block_x_size = bar_width - BLOCK_SPACE;
-    static constexpr int BLOCK_Y_SIZE = 4;
+    // Use smaller block sizes for monochrome OLED (denser bars)
+    const int block_space  = config_.monochrome ? 1 : 2;
+    const int block_x_size = bar_width - block_space;
+    const int block_y_size = config_.monochrome ? 2 : 4;
 
-    const int blocks_per_col = bar_height / (BLOCK_Y_SIZE + BLOCK_SPACE);
-    const int start_x = (block_x_size + BLOCK_SPACE) / 2 + x;
+    const int blocks_per_col = bar_height / (block_y_size + block_space);
+    const int start_x = (block_x_size + block_space) / 2 + x;
     const int h = config_.canvas_height;
 
     // ---- Falling-block animation ----
@@ -213,23 +240,36 @@ void SpectrumRenderer::DrawBar(int x, int y, int bar_width, int bar_height,
             constexpr int FALL_SPEED = 2;
             current_heights_[bar_index] -= FALL_SPEED;
 
-            if (current_heights_[bar_index] > (BLOCK_Y_SIZE + BLOCK_SPACE)) {
+            if (current_heights_[bar_index] > (block_y_size + block_space)) {
                 uint32_t now = esp_timer_get_time() / 1000;
                 if (now - last_flash_time_[bar_index] > 80) {
-                    falling_colors_[bar_index]  = GetRandomColor();
+                    falling_colors_[bar_index]  = config_.monochrome ? 0xFFFF : GetRandomColor();
                     last_flash_time_[bar_index] = now;
                 }
-                DrawBlock(start_x, h - current_heights_[bar_index],
-                          block_x_size, BLOCK_Y_SIZE, falling_colors_[bar_index]);
+                if (config_.monochrome) {
+                    DrawBlockMono(start_x, h - current_heights_[bar_index],
+                                  block_x_size, block_y_size);
+                } else {
+                    DrawBlock(start_x, h - current_heights_[bar_index],
+                              block_x_size, block_y_size, falling_colors_[bar_index]);
+                }
             }
         }
     }
 
     // ---- Draw main bar blocks ----
-    DrawBlock(start_x, h - 1, block_x_size, BLOCK_Y_SIZE, color);
-    for (int j = 1; j < blocks_per_col; j++) {
-        int start_y = j * (BLOCK_Y_SIZE + BLOCK_SPACE);
-        DrawBlock(start_x, h - start_y, block_x_size, BLOCK_Y_SIZE, color);
+    if (config_.monochrome) {
+        DrawBlockMono(start_x, h - 1, block_x_size, block_y_size);
+        for (int j = 1; j < blocks_per_col; j++) {
+            int start_y = j * (block_y_size + block_space);
+            DrawBlockMono(start_x, h - start_y, block_x_size, block_y_size);
+        }
+    } else {
+        DrawBlock(start_x, h - 1, block_x_size, block_y_size, color);
+        for (int j = 1; j < blocks_per_col; j++) {
+            int start_y = j * (block_y_size + block_space);
+            DrawBlock(start_x, h - start_y, block_x_size, block_y_size, color);
+        }
     }
 }
 
@@ -241,12 +281,33 @@ void SpectrumRenderer::DrawBlock(int x, int y, int block_w, int block_h,
                                  uint16_t color) {
     const int w = config_.canvas_width;
     const int h = config_.canvas_height;
+    uint16_t* buf = static_cast<uint16_t*>(canvas_buffer_);
 
     for (int row = y; row > y - block_h; row--) {
         if (row < 0 || row >= h) continue;
         if (x < 0 || x + block_w > w) continue;
-        uint16_t* line = &canvas_buffer_[row * w + x];
+        uint16_t* line = &buf[row * w + x];
         std::fill_n(line, block_w, color);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DrawBlockMono — fill a rectangle in I1 (1-bit) pixel buffer (white)
+// ---------------------------------------------------------------------------
+
+void SpectrumRenderer::DrawBlockMono(int x, int y, int block_w, int block_h) {
+    const int w      = config_.canvas_width;
+    const int h      = config_.canvas_height;
+    const int stride = GetMonoStride();
+    uint8_t* buf     = static_cast<uint8_t*>(canvas_buffer_);
+
+    for (int row = y; row > y - block_h; row--) {
+        if (row < 0 || row >= h) continue;
+        for (int col = x; col < x + block_w && col < w; col++) {
+            if (col < 0) continue;
+            // I1 format: MSB first, white = set bit
+            buf[row * stride + col / 8] |= (0x80 >> (col % 8));
+        }
     }
 }
 

@@ -165,7 +165,7 @@ protected:
     // ============================================================
     void SourceDataLoop(const std::string& source) override;
     void OnStreamInfoReady(int sample_rate, int bits_per_sample,
-                           int channels) override;
+                           int channels, int bitrate, int frame_size) override;
     void OnPcmFrame(int64_t play_time_ms, int sample_rate,
                     int channels) override;
     void OnPlaybackFinished() override;

@@ -7,11 +7,11 @@
  *   • Music UI overlay (title, sub-info, progress bar, next track)
  *
  * Isolation contract:
- *   • Does NOT depend on Display, LcdDisplay, or any display class.
- *   • Uses a simple callback (`OverlayCallback`) to tell the host
- *     whether the media overlay should be active or not.
- *   • Accesses the SD-music player through an abstract getter callback
- *     so it never directly includes Application.
+ *   • Does NOT depend on Display, LcdDisplay, or any player class.
+ *   • Uses a `MusicInfoProvider` callback to query current playback state
+ *     from the host — never directly includes any concrete player.
+ *   • Uses `OverlayCallback` to tell the host whether the media overlay
+ *     should be active or not.
  *
  * Thread safety:
  *   • Audio feed methods are thread-safe (called from streaming task).
@@ -27,9 +27,7 @@
 #include <functional>
 #include <string>
 #include <memory>
-
-// Forward declare — we only use a pointer, no include needed
-class Esp32SdMusic;
+#include <vector>
 
 namespace music {
 
@@ -44,8 +42,25 @@ enum class SourceType {
 };
 
 /**
- * @brief Configuration for the visualizer.
+ * @brief Immutable snapshot of the current playback state.
+ *
+ * Provided by the host via `MusicInfoProvider` callback.
+ * The visualizer never directly accesses any player object —
+ * it only reads this data-only struct.
  */
+struct MusicInfo {
+    SourceType  source       = SourceType::NONE;   ///< Active source
+    bool        is_playing   = false;              ///< True if audio is playing
+
+    std::string title;         ///< Track / station / stream name
+    std::string sub_info;      ///< Artist, bitrate, etc.
+    std::string next_track;    ///< Next track name (empty if N/A)
+
+    int64_t     position_ms  = 0;   ///< Current position (ms)
+    int64_t     duration_ms  = 0;   ///< Total duration (ms, 0 for live)
+    int         bitrate_kbps = 0;   ///< Bitrate in kbps
+};
+
 /**
  * @brief Configuration for the visualizer canvas and FFT parameters.
  *
@@ -72,9 +87,9 @@ struct VisualizerConfig {
  * Usage:
  * @code
  *   music::MusicVisualizer viz;
- *   viz.SetOverlayCallback([&](bool active) { display->SetMediaOverlayActive(active); });
- *   viz.SetSdPlayerGetter([]() -> Esp32SdMusic* { return app.GetSdMusic(); });
- *   viz.SetFontProvider([&](const lv_font_t** text, const lv_font_t** icon) { ... });
+ *   viz.SetOverlayCallback([&](bool a) { display->SetMediaOverlayActive(a); });
+ *   viz.SetInfoProvider([&]() { return BuildMusicInfo(); });
+ *   viz.SetFontProvider([&](auto** t, auto** i) { ... });
  *   viz.Start(config);
  *   // feed audio...
  *   viz.Stop();
@@ -83,12 +98,12 @@ struct VisualizerConfig {
 class MusicVisualizer {
 public:
     /// Callback to show/hide the media overlay on the host display.
-    using OverlayCallback   = std::function<void(bool active)>;
-    /// Callback to retrieve the SD music player pointer.
-    using SdPlayerGetter    = std::function<Esp32SdMusic*()>;
+    using OverlayCallback    = std::function<void(bool active)>;
+    /// Callback to retrieve a snapshot of current playback state.
+    using MusicInfoProvider  = std::function<MusicInfo()>;
     /// Callback to retrieve fonts from the display theme.
-    using FontProvider      = std::function<void(const lv_font_t** text_font,
-                                                 const lv_font_t** icon_font)>;
+    using FontProvider       = std::function<void(const lv_font_t** text_font,
+                                                  const lv_font_t** icon_font)>;
 
     MusicVisualizer() = default;
     ~MusicVisualizer();
@@ -102,8 +117,8 @@ public:
     /** Register callback to show/hide the media overlay. */
     void SetOverlayCallback(OverlayCallback cb) { overlay_cb_ = std::move(cb); }
 
-    /** Register callback to get the SD music player pointer. */
-    void SetSdPlayerGetter(SdPlayerGetter cb) { sd_getter_ = std::move(cb); }
+    /** Register callback to query current playback info. */
+    void SetInfoProvider(MusicInfoProvider cb) { info_provider_ = std::move(cb); }
 
     /** Register callback to get theme fonts. */
     void SetFontProvider(FontProvider cb) { font_provider_ = std::move(cb); }
@@ -115,8 +130,11 @@ public:
      *
      * Creates the spectrum canvas, builds the music info overlay,
      * and spawns the background FFT task.
+     *
+     * @param cfg         Canvas & FFT configuration.
+     * @param initial_info  Optional initial MusicInfo snapshot for first frame.
      */
-    bool Start(const VisualizerConfig& cfg, const std::string& music_info = "");
+    bool Start(const VisualizerConfig& cfg, const MusicInfo& initial_info = {});
 
     /** Stop spectrum + tear down music UI. */
     void Stop();
@@ -135,37 +153,26 @@ public:
     /** Release the PCM buffer. */
     void ReleaseAudioBuffer();
 
-    // ─── Music info ───────────────────────────────────────────────
-
-    /**
-     * @brief Update the displayed music info string.
-     *
-     * If the visualizer is running the labels are updated live.
-     * Must be called with the LVGL lock held.
-     */
-    void SetMusicInfo(const char* info);
-
-    /** Detect source type from the current music_info_ string. */
-    SourceType DetectSource() const;
-
 private:
     // ─── Music UI helpers ─────────────────────────────────────────
-    void BuildMusicUI();
+    void BuildMusicUI(const MusicInfo& info);
     void DestroyMusicUI();
     void UpdateMusicUI();
 
     static std::string MsToTimeString(int64_t ms);
 
+    static lv_color_t  AccentColorForSource(SourceType src);
+    static const char*  IconForSource(SourceType src);
+
     // ─── Callbacks ────────────────────────────────────────────────
-    OverlayCallback overlay_cb_;
-    SdPlayerGetter  sd_getter_;
-    FontProvider    font_provider_;
+    OverlayCallback   overlay_cb_;
+    MusicInfoProvider info_provider_;
+    FontProvider      font_provider_;
 
     // ─── Spectrum engine ──────────────────────────────────────────
     std::unique_ptr<spectrum::SpectrumManager> spectrum_mgr_;
 
-    // ─── Music state ──────────────────────────────────────────────
-    std::string music_info_;
+    // ─── Config ───────────────────────────────────────────────────
     VisualizerConfig config_{};
 
     // ─── LVGL music UI widgets ────────────────────────────────────

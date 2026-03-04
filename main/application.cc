@@ -16,11 +16,13 @@
 #include "features/mcp_server_features.h"
 #include "features/music/audio_stream_player.h"
 #include "lcd_display.h"
+#include "oled_display.h"
 #include "lvgl_theme.h"
 #include "features/music/music_visualizer.h"
+#include "features/spectrum/spectrum_manager.h"
 #include "features/video/video_player.h"
+#include "features/QRCode/qrcode_display.h"
 #include <esp_lvgl_port.h>
-#include <qrcode.h>
 #include <cmath>
 #include <cstring>
 #include <esp_log.h>
@@ -374,24 +376,7 @@ void Application::Start() {
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
 
 #if (0) // Test QR code display
-    // Capture display pointer for callback
-    static Display* s_display = display;
-    esp_qrcode_config_t qrcode_cfg = {
-        .display_func = [](esp_qrcode_handle_t qrcode) {
-            if (s_display && qrcode) {
-                s_display->DisplayQRCode(qrcode, nullptr);
-            }
-        },
-        .max_qrcode_version = 10,
-        .qrcode_ecc_level = ESP_QRCODE_ECC_MED
-    };
-    
-    // Create URL format for QR code
-    std::string qr_text = "1234567890";
-    esp_err_t err = esp_qrcode_generate(&qrcode_cfg, qr_text.c_str());
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to generate test QR code");
-    }
+    qrcode::QRCodeDisplay::GetInstance().Show("http://192.168.1.100/ota", "192.168.1.100/ota");
     return;
 #endif
 
@@ -797,7 +782,7 @@ void Application::SetDeviceState(DeviceState state) {
     // Stop all active media and clear display overlays when leaving idle state
     if (previous_state == kDeviceStateIdle && state != kDeviceStateIdle) {
         StopOtherMedia();
-        display->ClearQRCode();
+        qrcode::QRCodeDisplay::GetInstance().Clear();
     }																	   
     switch (state) {
         case kDeviceStateUnknown:
@@ -1316,10 +1301,13 @@ void Application::StopOtherMedia(MediaComponent except) {
 void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
     if (!player) return;
 
-    // Forward FFT PCM data to the MusicVisualizer (Application-owned)
+    // Forward FFT PCM data to the MusicVisualizer or OLED SpectrumManager
     player->SetFftCallback([this](int16_t* pcm_data, size_t pcm_bytes) {
         if (music_visualizer_ && music_visualizer_->IsRunning()) {
             music_visualizer_->FeedAudioData(pcm_data, pcm_bytes);
+        }
+        if (oled_spectrum_mgr_ && oled_spectrum_mgr_->IsRunning()) {
+            oled_spectrum_mgr_->FeedAudioData(pcm_data, pcm_bytes);
         }
     });
 
@@ -1327,16 +1315,17 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
         audio_service_.UpdateOutputTimestamp();
     });
 
-    // Manage MusicVisualizer lifecycle via player state transitions
+    // Manage MusicVisualizer / OLED spectrum lifecycle via player state transitions
     player->SetStateCallback([this](AudioPlayerState old_state, AudioPlayerState new_state) {
         auto display = Board::GetInstance().GetDisplay();
-        auto* lcd = dynamic_cast<LcdDisplay*>(display);
+        auto* lcd  = dynamic_cast<LcdDisplay*>(display);
+        auto* oled = dynamic_cast<OledDisplay*>(display);
 
         if (new_state == AudioPlayerState::Playing) {
             EnsureIdleForMedia();
 
             if (lcd) {
-                // Lazily create the visualizer once
+                // ── LCD path: full MusicVisualizer (spectrum + music UI overlay) ──
                 if (!music_visualizer_) {
                     music_visualizer_ = std::make_unique<music::MusicVisualizer>();
                 }
@@ -1346,8 +1335,8 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
                 viz->SetOverlayCallback([lcd](bool active) {
                     lcd->SetMediaOverlayActive(active);
                 });
-                viz->SetSdPlayerGetter([this]() -> Esp32SdMusic* {
-                    return GetSdMusic();
+                viz->SetInfoProvider([this]() -> music::MusicInfo {
+                    return BuildMusicInfo();
                 });
                 viz->SetFontProvider([lcd](const lv_font_t** text_font, const lv_font_t** icon_font) {
                     auto* theme = static_cast<LvglTheme*>(lcd->GetTheme());
@@ -1376,7 +1365,43 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
                 cfg.status_bar_h = status_h;
                 cfg.audio_buf_size = AUDIO_PCM_OUT_BUF_SIZE;
 
-                viz->Start(cfg);
+                // Provide initial info snapshot so first UI frame is populated
+                viz->Start(cfg, BuildMusicInfo());
+
+            } else if (oled) {
+                // ── OLED path: lightweight monochrome spectrum (no music UI) ──
+                if (oled_spectrum_mgr_ && oled_spectrum_mgr_->IsRunning()) {
+                    return;  // already running
+                }
+
+                // Compute status bar height
+                int status_h = 16;  // OLED default
+                if (lvgl_port_lock(1000)) {
+                    lv_obj_t* container = lv_obj_get_child(lv_screen_active(), 0);
+                    lv_obj_t* sb = container ? lv_obj_get_child(container, 0) : nullptr;
+                    if (sb) status_h = lv_obj_get_height(sb);
+                    lvgl_port_unlock();
+                }
+
+                spectrum::SpectrumConfig scfg;
+                scfg.monochrome     = true;
+                scfg.fft_size       = 256;
+                scfg.bar_count      = 16;
+                scfg.canvas_x       = 0;
+                scfg.canvas_y       = status_h;
+                scfg.canvas_width   = oled->width();                  // 128
+                scfg.canvas_height  = oled->height() - status_h;     // 48 or 16
+                scfg.lcd_width      = oled->width();
+                scfg.lcd_height     = oled->height();
+                scfg.status_bar_h   = status_h;
+                scfg.bar_max_height = scfg.canvas_height;
+                scfg.task_stack_size = 3 * 1024;
+                scfg.task_priority   = 1;
+                scfg.task_core       = 0;
+
+                oled_spectrum_mgr_ = std::make_unique<spectrum::SpectrumManager>(scfg);
+                oled_spectrum_mgr_->AllocateAudioBuffer(AUDIO_PCM_OUT_BUF_SIZE);
+                oled_spectrum_mgr_->Start();
             }
         } else if (old_state == AudioPlayerState::Playing &&
                    (new_state == AudioPlayerState::Idle ||
@@ -1384,13 +1409,75 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
             if (music_visualizer_) {
                 music_visualizer_->Stop();
             }
-            if (display) {
-                display->SetMusicInfo(nullptr);
+            if (oled_spectrum_mgr_) {
+                oled_spectrum_mgr_->Stop();
             }
         }
     });
 
     ESP_LOGI(TAG, "SetupAudioPlayerCallback: MusicVisualizer callbacks installed");
+}
+
+/**
+ * @brief Build a MusicInfo snapshot by auto-detecting the active player.
+ *
+ * Checks sd_music_, music_, and radio_ in priority order.
+ * Returns a data-only struct — the MusicVisualizer never touches
+ * any concrete player object.
+ */
+music::MusicInfo Application::BuildMusicInfo() {
+    music::MusicInfo info;
+
+    // 1. SD Card player (highest priority — has richest metadata)
+    if (sd_music_ && sd_music_->IsPlaying()) {
+        info.source       = music::SourceType::SD_CARD;
+        info.is_playing   = true;
+        info.title        = sd_music_->getCurrentTrack();
+        info.position_ms  = sd_music_->getCurrentPositionMs();
+        info.duration_ms  = sd_music_->getDurationMs();
+        info.bitrate_kbps = sd_music_->getBitrate();
+        if (info.bitrate_kbps > 1000) info.bitrate_kbps /= 1000;
+
+        char sub[64];
+        snprintf(sub, sizeof(sub), "%d kbps  •  %s",
+                 info.bitrate_kbps, sd_music_->getDurationString().c_str());
+        info.sub_info = sub;
+
+        // Find next track
+        auto tracks = sd_music_->listTracks();
+        std::string cur_path = sd_music_->getCurrentTrackPath();
+        int idx = -1;
+        for (size_t i = 0; i < tracks.size(); ++i) {
+            if (tracks[i].path == cur_path) { idx = static_cast<int>(i); break; }
+        }
+        if (idx >= 0 && idx < static_cast<int>(tracks.size()) - 1) {
+            info.next_track = tracks[idx + 1].name;
+        } else if (!tracks.empty()) {
+            info.next_track = tracks[0].name;
+        }
+        return info;
+    }
+
+    // 2. Online music player
+    if (music_ && music_->IsPlaying()) {
+        info.source     = music::SourceType::ONLINE;
+        info.is_playing = true;
+        info.title      = "Music Online";
+        info.sub_info   = "Playing...";
+        return info;
+    }
+
+    // 3. Internet radio
+    if (radio_ && radio_->IsPlaying()) {
+        info.source     = music::SourceType::RADIO;
+        info.is_playing = true;
+        info.title      = radio_->GetCurrentStation();
+        info.sub_info   = "Live Broadcast";
+        if (info.title.empty()) info.title = "FM Radio";
+        return info;
+    }
+
+    return info;  // SourceType::NONE
 }
 
 /* ==================================================================

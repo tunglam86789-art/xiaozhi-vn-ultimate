@@ -8,7 +8,6 @@ Contributors: Xiaozhi AI-IoT Vietnam Team
 #include "lvgl_theme.h"
 #include "assets/lang_config.h"
 #include "features/weather/weather_model.h"
-#include "features/QRCode/qrcode_display.h"
 
 #include <vector>
 #include <algorithm>
@@ -197,9 +196,6 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     Settings settings("display", false);
     std::string theme_name = settings.GetString("theme", "light");
     current_theme_ = LvglThemeManager::GetInstance().GetTheme(theme_name);
-
-    // Create isolated feature components
-    qrcode_display_   = std::make_unique<qrcode::QRCodeDisplay>();
 
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     weather_ui_ = std::make_unique<WeatherUI>();
@@ -420,9 +416,6 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
 
 LcdDisplay::~LcdDisplay() {
     SetPreviewImage(nullptr);
-
-    // Stop isolated components
-    qrcode_display_.reset();
     
     // Clean up GIF controller
     if (gif_controller_) {
@@ -1143,27 +1136,6 @@ void LcdDisplay::SetEmotion(const char* emotion) {
 #endif
 }
 
-// ===================================================================
-// Music info — display in chat label (spectrum is managed by Application)
-// ===================================================================
-
-void LcdDisplay::SetMusicInfo(const char* song_name) {
-#if CONFIG_USE_WECHAT_MESSAGE_STYLE
-    return;  // WeChat mode does not display song name
-#else
-    DisplayLockGuard lock(this);
-    if (chat_message_label_ == nullptr) return;
-
-    if (song_name && strlen(song_name) > 0) {
-        lv_label_set_text(chat_message_label_, song_name);
-        if (emoji_label_) lv_obj_clear_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
-        if (preview_image_) lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_label_set_text(chat_message_label_, "");
-    }
-#endif
-}
-
 void LcdDisplay::SetTheme(Theme* theme) {
     DisplayLockGuard lock(this);
     
@@ -1296,37 +1268,6 @@ void LcdDisplay::SetTheme(Theme* theme) {
 
     // No errors occurred. Save theme to settings
     Display::SetTheme(lvgl_theme);
-}
-
-// ===================================================================
-// QR code — thin delegation to qrcode::QRCodeDisplay
-// ===================================================================
-
-void LcdDisplay::DisplayQRCode(const uint8_t* qrcode, const char* text) {
-    if (!qrcode) return;
-    DisplayLockGuard lock(this);
-    int status_h = status_bar_ ? lv_obj_get_height(status_bar_) : 0;
-    if (qrcode_display_) {
-        qrcode_display_->Show(qrcode, width_, height_, status_h, text);
-    }
-}
-
-bool LcdDisplay::QRCodeIsSupported() {
-    return true;
-}
-
-void LcdDisplay::ClearQRCode() {
-    DisplayLockGuard lock(this);
-    if (qrcode_display_) {
-        qrcode_display_->Clear();
-    }
-}
-
-void LcdDisplay::SetIpAddress(const std::string& ip_address) {
-    if (qrcode_display_) {
-        qrcode_display_->SetIpAddress(ip_address);
-    }
-    ESP_LOGI(TAG, "IP address set to: %s", ip_address.c_str());
 }
 
 void LcdDisplay::SetRotationAndOffset(lv_display_rotation_t rotation, int offset_x, int offset_y) {

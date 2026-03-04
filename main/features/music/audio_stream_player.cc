@@ -772,9 +772,9 @@ void AudioStreamPlayer::PlayLoopCompressed()
 
         if (!dec_info_ready_ && dec_info_.sample_rate > 0) {
             dec_info_ready_ = true;
-            ESP_LOGI(TAG, "Stream: %d Hz, %d bit, %d ch",
-                     dec_info_.sample_rate, dec_info_.bits_per_sample, dec_info_.channel);
-            OnStreamInfoReady(dec_info_.sample_rate, dec_info_.bits_per_sample, dec_info_.channel);
+            ESP_LOGI(TAG, "Stream: %d Hz, %d bit, %d ch, %d kbps, %d frame size",
+                     dec_info_.sample_rate, dec_info_.bits_per_sample, dec_info_.channel, dec_info_.bitrate, dec_info_.frame_size);
+            OnStreamInfoReady(dec_info_.sample_rate, dec_info_.bits_per_sample, dec_info_.channel, dec_info_.bitrate, dec_info_.frame_size);
         }
 
         total_frames_decoded_++;
@@ -831,7 +831,7 @@ void AudioStreamPlayer::PlayLoopWav()
     }
 
     /* Notify subclass */
-    OnStreamInfoReady(sr, wav_info_.bits_per_sample, ch);
+    OnStreamInfoReady(sr, wav_info_.bits_per_sample, ch, 0, 0);
 
     /* Wait for some data */
     while (is_playing_ && buffer_size_ < AUDIO_FILE_BUF_MIN_SIZE && is_source_active_) {

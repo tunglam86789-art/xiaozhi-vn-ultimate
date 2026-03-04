@@ -230,7 +230,7 @@ protected:
 
     /** Called once after the first frame is decoded. */
     virtual void OnStreamInfoReady(int sample_rate, int bits_per_sample,
-                                   int channels) {}
+                                   int channels, int bitrate, int frame_size) {}
 
     /** Called on each decoded PCM frame. */
     virtual void OnPcmFrame(int64_t play_time_ms, int sample_rate,

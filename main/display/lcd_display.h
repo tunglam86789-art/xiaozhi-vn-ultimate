@@ -12,9 +12,6 @@
 #include <atomic>
 #include <memory>
 
-// Forward declaration for isolated QR code component
-namespace qrcode { class QRCodeDisplay; }
-
 #define PREVIEW_IMAGE_DURATION_MS 5000
 
 // Theme color structure
@@ -52,9 +49,6 @@ protected:
     // Weather UI component
     std::unique_ptr<WeatherUI> weather_ui_;
 
-    // Isolated feature components (owned by lcd_display, logic lives elsewhere)
-    std::unique_ptr<qrcode::QRCodeDisplay>  qrcode_display_;
-
     void InitializeLcdThemes();
     void SetupUI();
     virtual bool Lock(int timeout_ms = 0) override;
@@ -82,15 +76,6 @@ public:
 
     /** Show/hide the media overlay (hides emoji + chat for FFT/video). */
     virtual void SetMediaOverlayActive(bool active) override;
-
-    /** Update music info — shows in chat label when spectrum is not active. */
-    virtual void SetMusicInfo(const char* song_name) override;
-
-    // QR code display methods (delegates to qrcode_display_)
-    virtual void DisplayQRCode(const uint8_t* qrcode, const char* text = nullptr) override;
-    virtual void ClearQRCode() override;
-    virtual bool QRCodeIsSupported() override;
-    virtual void SetIpAddress(const std::string& ip_address) override;
 
     // Rotate lcd display
     virtual bool SetRotation(int rotation_degree, bool save_setting) override;

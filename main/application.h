@@ -22,7 +22,8 @@ class AudioStreamPlayer;
 class VideoPlayer;
 
 // Forward declaration for MusicVisualizer (owned by Application)
-namespace music { class MusicVisualizer; }
+namespace music { class MusicVisualizer; struct MusicInfo; }
+namespace spectrum { class SpectrumManager; }
 
 // --- Display Weather ---
 #include "display.h"
@@ -158,6 +159,12 @@ public:
      */
     void SetupAudioPlayerCallback(AudioStreamPlayer* player);
 
+    /**
+     * @brief Build a MusicInfo snapshot by auto-detecting the active player.
+     * Called by MusicVisualizer's periodic callback to update the UI.
+     */
+    music::MusicInfo BuildMusicInfo();
+
     /* ================================================================== */
     /*  Component Initializers                                            */
     /* ================================================================== */
@@ -195,6 +202,9 @@ private:
 
     // Music spectrum visualizer (owned by Application, not Display)
     std::unique_ptr<music::MusicVisualizer> music_visualizer_;
+
+    // OLED spectrum (simple bars, no music UI overlay)
+    std::unique_ptr<spectrum::SpectrumManager> oled_spectrum_mgr_;
 
     bool has_server_time_ = false;
     bool aborted_ = false;
