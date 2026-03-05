@@ -50,7 +50,7 @@ OledDisplay::OledDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handl
         .io_handle = panel_io_,
         .panel_handle = panel_,
         .control_handle = nullptr,
-        .buffer_size = static_cast<uint32_t>(width_ * height_),
+        .buffer_size = static_cast<uint32_t>(width_ * height_), // LVGL: lvgl_port_add_disp_priv(359): Monochromatic display must using full buffer!
         .double_buffer = false,
         .trans_size = 0,
         .hres = static_cast<uint32_t>(width_),
@@ -61,8 +61,10 @@ OledDisplay::OledDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handl
             .mirror_x = mirror_x,
             .mirror_y = mirror_y,
         },
+        .color_format = LV_COLOR_FORMAT_I1, // Monochrome display using 1 bit per pixel, lv_display_get_color_format() will return LV_COLOR_FORMAT_I1
         .flags = {
-            .buff_dma = 1,
+            // LVGL: lvgl_port_add_disp_priv(284): DMA buffer can be used only in display color format RGB565 (not aligned copy)!
+            .buff_dma = 0, // For monochrome OLED, we cannot use DMA buffer due to LVGL port limitations.
             .buff_spiram = 0,
             .sw_rotate = 0,
             .full_refresh = 0,

@@ -1322,13 +1322,14 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
     // Manage MusicVisualizer / OLED spectrum lifecycle via player state transitions
     player->SetStateCallback([this](AudioPlayerState old_state, AudioPlayerState new_state) {
         auto display = Board::GetInstance().GetDisplay();
-        auto* lcd  = dynamic_cast<LcdDisplay*>(display);
-        auto* oled = dynamic_cast<OledDisplay*>(display);
+        auto* disp = lv_display_get_default();
+        auto cf = lv_display_get_color_format(disp);
 
         if (new_state == AudioPlayerState::Playing) {
             EnsureIdleForMedia();
 
-            if (lcd) {
+            if (cf != LV_COLOR_FORMAT_I1) {
+                Display* lcd  = display;
                 // ── LCD path: full MusicVisualizer (spectrum + music UI overlay) ──
                 if (!music_visualizer_) {
                     music_visualizer_ = std::make_unique<music::MusicVisualizer>();
@@ -1372,7 +1373,8 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
                 // Provide initial info snapshot so first UI frame is populated
                 viz->Start(cfg, BuildMusicInfo());
                 ESP_LOGI(TAG, "MusicVisualizer started for LCD display with status bar height %d", status_h);
-            } else if (oled) {
+            } else {
+                Display* oled  = display;
                 // ── OLED path: lightweight monochrome spectrum (no music UI) ──
                 if (oled_spectrum_mgr_ && oled_spectrum_mgr_->IsRunning()) {
                     return;  // already running
@@ -1417,7 +1419,7 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
             }
             if (oled_spectrum_mgr_) {
                 oled_spectrum_mgr_->Stop();
-                if (oled) oled->SetMediaOverlayActive(false);
+                display->SetMediaOverlayActive(false);
             }
         }
     });
