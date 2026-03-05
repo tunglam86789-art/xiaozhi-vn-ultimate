@@ -161,18 +161,17 @@ void LcdDisplay::SetMediaOverlayActive(bool active) {
     media_overlay_active_ = active;
 
     if (active) {
-        // Hide main emotion / chat widgets for media playback
-        if (emoji_label_) lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
-        if (emoji_image_) lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+        // Hide main UI widgets for media playback
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
         if (weather_ui_) weather_ui_->HideIdleCard();
         if (container_) lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
 #endif
+        if (content_) lv_obj_add_flag(content_, LV_OBJ_FLAG_HIDDEN);
         ESP_LOGI(TAG, "Media overlay active: main UI hidden");
     } else {
-        // Restore main emotion / chat widgets
-        if (emoji_label_) lv_obj_clear_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
-        if (emoji_image_) lv_obj_clear_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+        if (content_ && lv_obj_has_flag(content_, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_remove_flag(content_, LV_OBJ_FLAG_HIDDEN);
+        }
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
         if (container_ && lv_obj_has_flag(container_, LV_OBJ_FLAG_HIDDEN)) {
             lv_obj_remove_flag(container_, LV_OBJ_FLAG_HIDDEN);

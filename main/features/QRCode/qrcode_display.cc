@@ -55,38 +55,6 @@ bool QRCodeDisplay::Show(const std::string& url, const std::string& display_text
 
     // esp_qrcode_generate calls display_func synchronously
     esp_qrcode_config_t qrcode_cfg = {
-        .display_func = [](esp_qrcode_handle_t qrcode) {
-            // This runs inside esp_qrcode_generate, same thread
-            auto& self = QRCodeDisplay::GetInstance();
-
-            if (!lvgl_port_lock(3000)) {
-                ESP_LOGE(TAG, "Failed to acquire LVGL lock");
-                return;
-            }
-
-            // Detect display type
-            auto* disp = lv_display_get_default();
-            if (!disp) {
-                lvgl_port_unlock();
-                ESP_LOGE(TAG, "No default LVGL display");
-                return;
-            }
-
-            int screen_w = lv_display_get_horizontal_resolution(disp);
-            int screen_h = lv_display_get_vertical_resolution(disp);
-            auto cf = lv_display_get_color_format(disp);
-
-            // Tear down previous canvas
-            self.DestroyCanvas();
-
-            if (cf == LV_COLOR_FORMAT_I1) {
-                self.RenderMono(qrcode, screen_w, screen_h, nullptr);
-            } else {
-                self.RenderColor(qrcode, screen_w, screen_h, nullptr);
-            }
-
-            lvgl_port_unlock();
-        },
         .max_qrcode_version = 10,
         .qrcode_ecc_level = ESP_QRCODE_ECC_MED,
     };
@@ -138,6 +106,7 @@ bool QRCodeDisplay::Show(const std::string& url, const std::string& display_text
     render_ok = displayed_;
     if (render_ok) {
         ESP_LOGI(TAG, "QR code displayed for: %s", url.c_str());
+        if (overlay_cb_) overlay_cb_(true);
     }
     return render_ok;
 }
@@ -157,6 +126,7 @@ void QRCodeDisplay::Clear() {
     DestroyCanvas();
     lvgl_port_unlock();
 
+    if (overlay_cb_) overlay_cb_(false);
     ESP_LOGI(TAG, "QR code cleared");
 }
 
@@ -258,8 +228,10 @@ void QRCodeDisplay::RenderMono(const uint8_t* qrcode,
     int canvas_w = screen_w;
     int canvas_h = screen_h;
 
-    // Allocate I1 (1-bit) buffer in DMA-capable internal memory
-    size_t buf_size = LV_CANVAS_BUF_SIZE(canvas_w, canvas_h, 1, LV_COLOR_FORMAT_I1);
+    // Allocate I1 (1-bit) buffer in DMA-capable internal memory.
+    // Must use LV_DRAW_BUF_SIZE — it includes the 8-byte I1 palette
+    // (2 entries × sizeof(lv_color32_t)) that LV_CANVAS_BUF_SIZE omits.
+    size_t buf_size = LV_DRAW_BUF_SIZE(canvas_w, canvas_h, LV_COLOR_FORMAT_I1);
     auto* buf = static_cast<uint8_t*>(
         heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
     if (!buf) {
@@ -273,7 +245,8 @@ void QRCodeDisplay::RenderMono(const uint8_t* qrcode,
     // Create LVGL canvas
     auto* canvas = lv_canvas_create(lv_scr_act());
     lv_canvas_set_buffer(canvas, buf, canvas_w, canvas_h, LV_COLOR_FORMAT_I1);
-    // Palette: index 0 = white (background), index 1 = black (foreground)
+    // Palette must be set BEFORE fill_bg so the fill uses the correct mapping.
+    // index 0 = white (background bits = 0), index 1 = black (foreground bits = 1)
     lv_canvas_set_palette(canvas, 0, lv_color_to_32(lv_color_white(), LV_OPA_COVER));
     lv_canvas_set_palette(canvas, 1, lv_color_to_32(lv_color_black(), LV_OPA_COVER));
     lv_obj_set_size(canvas, canvas_w, canvas_h);
@@ -315,6 +288,7 @@ void QRCodeDisplay::RenderMono(const uint8_t* qrcode,
         }
     }
 
+#if (0)
     // Draw text below QR code
     if (text && text[0]) {
         lv_draw_label_dsc_t label_dsc;
@@ -331,6 +305,7 @@ void QRCodeDisplay::RenderMono(const uint8_t* qrcode,
         };
         lv_draw_label(&layer, &label_dsc, &text_area);
     }
+#endif
 
     lv_canvas_finish_layer(canvas, &layer);
     lv_obj_remove_flag(canvas, LV_OBJ_FLAG_HIDDEN);

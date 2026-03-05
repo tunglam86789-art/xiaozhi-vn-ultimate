@@ -59,8 +59,11 @@ bool SpectrumRenderer::CreateCanvas(lv_obj_t* parent) {
     lv_color_format_t fmt;
 
     if (config_.monochrome) {
-        // I1 (1-bit) — suitable for OLED SSD1306 / SH1107 displays
-        size_t buf_size = LV_CANVAS_BUF_SIZE(w, h, 1, LV_COLOR_FORMAT_I1);
+        // I1 (1-bit) — suitable for OLED SSD1306 / SH1107 displays.
+        // Must use LV_DRAW_BUF_SIZE which correctly includes the 8-byte palette
+        // (2 entries × sizeof(lv_color32_t)) prepended to the pixel data.
+        // LV_CANVAS_BUF_SIZE omits the palette and would produce a too-small buffer.
+        size_t buf_size = LV_DRAW_BUF_SIZE(w, h, LV_COLOR_FORMAT_I1);
         canvas_buffer_ = heap_caps_malloc(buf_size, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
         if (!canvas_buffer_) {
             ESP_LOGE(TAG, "Failed to allocate mono canvas buffer (%dx%d)", w, h);
@@ -90,6 +93,15 @@ bool SpectrumRenderer::CreateCanvas(lv_obj_t* parent) {
     // FLOATING: bypass parent layout/padding/scroll so canvas is truly absolute-positioned
     lv_obj_add_flag(canvas_, LV_OBJ_FLAG_FLOATING);
     lv_obj_clear_flag(canvas_, LV_OBJ_FLAG_SCROLLABLE);
+
+    // For I1 indexed format the palette sits at the start of the buffer.
+    // After memset-to-zero both entries are transparent-black, so "white" bits
+    // would render invisibly.  Set palette BEFORE fill_bg so the fill uses the
+    // correct color mapping: index 1 = black, index 0 = white.
+    if (config_.monochrome) {
+        lv_canvas_set_palette(canvas_, 1, lv_color_to_32(lv_color_black(), LV_OPA_COVER));  // black
+        lv_canvas_set_palette(canvas_, 0, lv_color_to_32(lv_color_white(), LV_OPA_COVER));  // white
+    }
 
     lv_canvas_fill_bg(canvas_, lv_color_make(0, 0, 0), LV_OPA_COVER);
     lv_obj_move_foreground(canvas_);
@@ -177,7 +189,12 @@ void SpectrumRenderer::Render(const float* power_spectrum, int spectrum_size) {
     // ---- 3. Clear canvas ----
     if (config_.monochrome) {
         const int stride = GetMonoStride();
-        memset(canvas_buffer_, 0, stride * h);
+        // The I1 buffer layout: [8-byte palette][stride*h pixel data].
+        // Skip the palette when clearing, otherwise the white/black color
+        // entries are wiped every frame and bars become invisible.
+        const size_t palette_bytes = LV_COLOR_INDEXED_PALETTE_SIZE(LV_COLOR_FORMAT_I1)
+                                     * sizeof(lv_color32_t);  // 2 * 4 = 8
+        memset(static_cast<uint8_t*>(canvas_buffer_) + palette_bytes, 0, stride * h);
     } else {
         std::fill_n(static_cast<uint16_t*>(canvas_buffer_), w * h, COLOR_BLACK);
     }
@@ -299,7 +316,9 @@ void SpectrumRenderer::DrawBlockMono(int x, int y, int block_w, int block_h) {
     const int w      = config_.canvas_width;
     const int h      = config_.canvas_height;
     const int stride = GetMonoStride();
-    uint8_t* buf     = static_cast<uint8_t*>(canvas_buffer_);
+    const size_t palette_bytes = LV_COLOR_INDEXED_PALETTE_SIZE(LV_COLOR_FORMAT_I1)
+                                    * sizeof(lv_color32_t);  // 2 * 4 = 8
+    uint8_t* buf     = static_cast<uint8_t*>(canvas_buffer_) + palette_bytes; // Skip palette
 
     for (int row = y; row > y - block_h; row--) {
         if (row < 0 || row >= h) continue;

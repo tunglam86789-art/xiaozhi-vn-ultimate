@@ -410,8 +410,12 @@ void Application::Start() {
     /* Wait for the network to be ready */
     board.StartNetwork();
 
-    // Register network tool (no component dependency)
-    McpFeatureTools::RegisterIp2QrCodeTool();
+    // Register network tool — pass overlay callback so the QR canvas can
+    // hide/restore the host display's normal UI while it is visible.
+    // SetMediaOverlayActive is virtual: works for both LCD and OLED.
+    McpFeatureTools::RegisterIp2QrCodeTool([display](bool active) {
+        display->SetMediaOverlayActive(active);
+    });
 
     // Initialize media components and register their MCP tools
     InitMusic();
@@ -1367,7 +1371,7 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
 
                 // Provide initial info snapshot so first UI frame is populated
                 viz->Start(cfg, BuildMusicInfo());
-
+                ESP_LOGI(TAG, "MusicVisualizer started for LCD display with status bar height %d", status_h);
             } else if (oled) {
                 // ── OLED path: lightweight monochrome spectrum (no music UI) ──
                 if (oled_spectrum_mgr_ && oled_spectrum_mgr_->IsRunning()) {
@@ -1402,6 +1406,8 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
                 oled_spectrum_mgr_ = std::make_unique<spectrum::SpectrumManager>(scfg);
                 oled_spectrum_mgr_->AllocateAudioBuffer(AUDIO_PCM_OUT_BUF_SIZE);
                 oled_spectrum_mgr_->Start();
+                oled->SetMediaOverlayActive(true);
+                ESP_LOGI(TAG, "OLED SpectrumManager started with status bar height %d", status_h);
             }
         } else if (old_state == AudioPlayerState::Playing &&
                    (new_state == AudioPlayerState::Idle ||
@@ -1411,6 +1417,7 @@ void Application::SetupAudioPlayerCallback(AudioStreamPlayer* player) {
             }
             if (oled_spectrum_mgr_) {
                 oled_spectrum_mgr_->Stop();
+                if (oled) oled->SetMediaOverlayActive(false);
             }
         }
     });

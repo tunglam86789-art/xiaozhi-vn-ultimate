@@ -9,6 +9,8 @@
 #ifndef MCP_SERVER_FEATURES_H
 #define MCP_SERVER_FEATURES_H
 
+#include <functional>
+
 class Esp32Music;
 class Esp32Radio;
 class Esp32SdMusic;
@@ -22,8 +24,15 @@ class VideoPlayer;
  */
 class McpFeatureTools {
 public:
-    /** Network / QR code tool (no component dependency). */
-    static void RegisterIp2QrCodeTool();
+    /**
+     * @brief Network / QR code tool.
+     *
+     * @param overlay_cb  Optional callback fired with `true` when the QR
+     *                    canvas appears and `false` when it is cleared.
+     *                    Use it to hide/restore the host display's normal UI.
+     */
+    static void RegisterIp2QrCodeTool(
+        std::function<void(bool)> overlay_cb = nullptr);
 
     /** Online music tools (play_song, set_display_mode). */
     static void RegisterMusicTools(Esp32Music* music);

@@ -16,6 +16,7 @@
  */
 #pragma once
 
+#include <functional>
 #include <string>
 #include <cstdint>
 
@@ -23,6 +24,9 @@ namespace qrcode {
 
 class QRCodeDisplay {
 public:
+    /** Called with `true` when QR is displayed, `false` when cleared. */
+    using OverlayCallback = std::function<void(bool active)>;
+
     /** Get the singleton instance. */
     static QRCodeDisplay& GetInstance();
 
@@ -56,6 +60,14 @@ public:
     /** @return true if QR code is currently displayed. */
     bool IsDisplayed() const { return displayed_; }
 
+    /**
+     * @brief Register a callback invoked on show (true) and clear (false).
+     *
+     * Use this to hide/restore the host display's normal UI while the QR
+     * canvas is visible (mirrors MusicVisualizer::OverlayCallback pattern).
+     */
+    void SetOverlayCallback(OverlayCallback cb) { overlay_cb_ = std::move(cb); }
+
 private:
     QRCodeDisplay() = default;
     ~QRCodeDisplay();
@@ -71,9 +83,10 @@ private:
     /** Free canvas and buffer resources.  Caller must hold LVGL lock. */
     void DestroyCanvas();
 
-    void*  canvas_buffer_ = nullptr;
-    void*  canvas_obj_    = nullptr;   // lv_obj_t* (avoid lvgl.h in header)
-    bool   displayed_     = false;
+    void*          canvas_buffer_ = nullptr;
+    void*          canvas_obj_    = nullptr;   // lv_obj_t* (avoid lvgl.h in header)
+    bool           displayed_     = false;
+    OverlayCallback overlay_cb_;
 };
 
 }  // namespace qrcode

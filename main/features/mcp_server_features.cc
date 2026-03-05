@@ -29,7 +29,11 @@
 /*  Network / QR code tool                                             */
 /* ================================================================== */
 
-void McpFeatureTools::RegisterIp2QrCodeTool() {
+void McpFeatureTools::RegisterIp2QrCodeTool(std::function<void(bool)> overlay_cb) {
+    // Wire the overlay callback to the QRCodeDisplay singleton so that
+    // Show() and Clear() automatically notify the host display.
+    qrcode::QRCodeDisplay::GetInstance().SetOverlayCallback(std::move(overlay_cb));
+
     auto& mcp = McpServer::GetInstance();
 
     mcp.AddTool("self.network.ip2qrcode",

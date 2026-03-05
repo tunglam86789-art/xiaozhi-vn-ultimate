@@ -359,3 +359,35 @@ void OledDisplay::SetTheme(Theme* theme) {
     auto screen = lv_screen_active();
     lv_obj_set_style_text_font(screen, text_font, 0);
 }
+
+/* ------------------------------------------------------------------
+ * SetMediaOverlayActive — hide/restore OLED content widgets
+ *
+ * When a media canvas (spectrum FFT, QR code) is active it covers
+ * the area below the status bar.  Hide the content/chat widgets so
+ * they don't bleed through; the status bar row is always preserved.
+ *
+ * Layout mapping:
+ *   128×64 — container_ [col]: status_bar_ / content_ [row: content_left_ + content_right_]
+ *   128×32 — container_ [row]: content_ (emotion 32 px) / side_bar_ [col: status_bar_ / chat_message_label_]
+ * ------------------------------------------------------------------ */
+void OledDisplay::SetMediaOverlayActive(bool active) {
+    DisplayLockGuard lock(this);
+
+    if (active == media_overlay_active_) return;
+    media_overlay_active_ = active;
+
+    if (active) {
+        // Hide emotion-icon area (present in both layouts)
+        if (content_) lv_obj_add_flag(content_, LV_OBJ_FLAG_HIDDEN);
+        // Hide chat label in 128×32 layout (lives outside content_)
+        if (chat_message_label_) lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
+        ESP_LOGI(TAG, "Media overlay active: OLED content hidden");
+    } else {
+        if (content_ && lv_obj_has_flag(content_, LV_OBJ_FLAG_HIDDEN))
+            lv_obj_remove_flag(content_, LV_OBJ_FLAG_HIDDEN);
+        if (chat_message_label_ && lv_obj_has_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN))
+            lv_obj_remove_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
+        ESP_LOGI(TAG, "Media overlay inactive: OLED content restored");
+    }
+}

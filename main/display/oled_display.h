@@ -20,6 +20,9 @@ private:
     lv_obj_t *emotion_label_ = nullptr;
     lv_obj_t* chat_message_label_ = nullptr;
 
+    // Media overlay state (true = content hidden for spectrum/QR canvas)
+    bool media_overlay_active_ = false;
+
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 
@@ -33,6 +36,7 @@ public:
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void SetEmotion(const char* emotion) override;
     virtual void SetTheme(Theme* theme) override;
+    virtual void SetMediaOverlayActive(bool active) override;
 };
 
 #endif // OLED_DISPLAY_H
