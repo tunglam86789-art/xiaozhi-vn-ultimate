@@ -45,7 +45,7 @@ struct SpectrumConfig {
     int audio_process_interval_ms   = 10;  ///< Audio processing interval (ms)
 
     // ---- FreeRTOS Task Parameters ----
-    int task_stack_size     = 3 * 1024;  ///< Stack size in bytes
+    int task_stack_size     = 4 * 1024;  ///< Stack size in bytes
     int task_priority       = 1;         ///< Task priority
     int task_core           = 0;         ///< CPU core affinity
 

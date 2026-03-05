@@ -549,8 +549,8 @@ private:
                         auto& app = Application::GetInstance();
                         auto sd_music = app.GetSdMusic();
                         if (sd_music) {
-                            sd_music->stop();
-                            sd_music->next();
+                            sd_music->Stop();
+                            sd_music->Next();
                             vTaskDelay(pdMS_TO_TICKS(500));
                         }
                     } else {
@@ -580,8 +580,8 @@ private:
                         auto& app = Application::GetInstance();
                         auto sd_music = app.GetSdMusic();
                         if (sd_music) {
-                            sd_music->stop();
-                            sd_music->prev();
+                            sd_music->Stop();
+                            sd_music->Prev();
                             vTaskDelay(pdMS_TO_TICKS(500));
                         }
                         break;
@@ -648,7 +648,7 @@ private:
                         auto sd_music = app.GetSdMusic();
                         if (sd_music) {
                         ESP_LOGI(TAG, "Toggle Play/Pause");
-                        sd_music->play();
+                        sd_music->Play();
                         }
                     } else {
                         GetAudioCodec()->SetOutputVolume(0);

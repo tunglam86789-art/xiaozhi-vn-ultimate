@@ -188,12 +188,14 @@ void VideoPlayer::Deinitialize() {
         }
         render_task_handle_ = nullptr;
 #if VIDEO_PLAYER_STATIC_TASK_CREATION == 1
-        assert(render_task_buffer_ != nullptr);
-        assert(render_task_stack_ != nullptr);
-        heap_caps_free(render_task_buffer_);
-        render_task_buffer_ = nullptr;
-        heap_caps_free(render_task_stack_);
-        render_task_stack_ = nullptr;
+        if (render_task_buffer_) {
+            heap_caps_free(render_task_buffer_);
+            render_task_buffer_ = nullptr;
+        }
+        if (render_task_stack_) {
+            heap_caps_free(render_task_stack_);
+            render_task_stack_ = nullptr;
+        }
 #endif
 
         render_exit_.store(false);

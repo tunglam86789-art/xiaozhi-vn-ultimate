@@ -1181,10 +1181,10 @@ bool Application::PlaySdMedia(const std::string& keyword, bool is_video) {
     EnsureIdleForMedia();
 
     ESP_LOGI(TAG, "PlaySdMedia: keyword='%s'", keyword.c_str());
-    if (sd_music_->getTotalTracks() == 0) {
-        sd_music_->loadTrackList();
+    if (sd_music_->GetTotalTracks() == 0) {
+        sd_music_->LoadPlaylist();
     }
-    return sd_music_->playByName(keyword);
+    return sd_music_->PlayByName(keyword);
 #else
     ESP_LOGW(TAG, "SD card support not enabled");
     return false;
@@ -1225,7 +1225,7 @@ void Application::StopAllMedia() {
 bool Application::IsMediaPlaying() const {
     if (music_ && music_->IsPlaying()) return true;
     if (radio_ && radio_->IsPlaying()) return true;
-    if (sd_music_ && sd_music_->getState() == Esp32SdMusic::PlayerState::Playing) return true;
+    if (sd_music_ && sd_music_->GetState() == Esp32SdMusic::PlayerState::Playing) return true;
 #ifdef CONFIG_SD_CARD_ENABLE
     if (sd_video_ && sd_video_->GetState() == VideoPlayerState::Playing) return true;
 #endif
@@ -1288,9 +1288,9 @@ void Application::StopOtherMedia(MediaComponent except) {
     }
 #ifdef CONFIG_SD_CARD_ENABLE
     if (except != MediaComponent::kSdMusic && sd_music_ &&
-        sd_music_->getState() == Esp32SdMusic::PlayerState::Playing) {
+        sd_music_->GetState() == Esp32SdMusic::PlayerState::Playing) {
         ESP_LOGI(TAG, "StopOtherMedia: stopping SD music");
-        sd_music_->stop();
+        sd_music_->Stop();
     }
     if (except != MediaComponent::kVideo && sd_video_) {
         auto state = sd_video_->GetState();
@@ -1441,20 +1441,20 @@ music::MusicInfo Application::BuildMusicInfo() {
     if (sd_music_ && sd_music_->IsPlaying()) {
         info.source       = music::SourceType::SD_CARD;
         info.is_playing   = true;
-        info.title        = sd_music_->getCurrentTrack();
-        info.position_ms  = sd_music_->getCurrentPositionMs();
-        info.duration_ms  = sd_music_->getDurationMs();
-        info.bitrate_kbps = sd_music_->getBitrate();
+        info.title        = sd_music_->GetCurrentTrack();
+        info.position_ms  = sd_music_->GetCurrentPositionMs();
+        info.duration_ms  = sd_music_->GetDurationMs();
+        info.bitrate_kbps = sd_music_->GetBitrate();
         if (info.bitrate_kbps > 1000) info.bitrate_kbps /= 1000;
 
         char sub[64];
         snprintf(sub, sizeof(sub), "%d kbps  •  %s",
-                 info.bitrate_kbps, sd_music_->getDurationString().c_str());
+                 info.bitrate_kbps, sd_music_->GetDurationString().c_str());
         info.sub_info = sub;
 
         // Find next track
-        auto tracks = sd_music_->listTracks();
-        std::string cur_path = sd_music_->getCurrentTrackPath();
+        auto tracks = sd_music_->GetPlaylist();
+        std::string cur_path = sd_music_->GetCurrentTrackPath();
         int idx = -1;
         for (size_t i = 0; i < tracks.size(); ++i) {
             if (tracks[i].path == cur_path) { idx = static_cast<int>(i); break; }
@@ -1565,7 +1565,7 @@ bool Application::InitSdMusic() {
 
     auto codec = Board::GetInstance().GetAudioCodec();
     sd_music_->Initialize(sd_card, codec);
-    sd_music_->loadTrackList();
+    sd_music_->LoadPlaylist();
     SetupAudioPlayerCallback(sd_music_);
 
     McpFeatureTools::RegisterSdMusicTools(sd_music_);

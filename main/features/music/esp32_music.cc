@@ -367,10 +367,11 @@ void Esp32Music::OnPcmFrame(int64_t play_time_ms, int sample_rate, int channels)
     lyric_mgr_.UpdateDisplay(play_time_ms + LYRIC_LATENCY_OFFSET_MS);
 }
 
-void Esp32Music::OnPlaybackFinished()
+bool Esp32Music::OnPlaybackFinishedAndContinue()
 {
     lyric_mgr_.Stop();
     ESP_LOGI(TAG, "Playback finished callback");
+    return false;
 }
 
 void Esp32Music::OnDisplayReady()

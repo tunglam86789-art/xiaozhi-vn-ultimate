@@ -86,78 +86,133 @@ public:
     void Initialize(class SdCard* sd_card, AudioCodec *codec);
 
     // ============================================================
-    // 6) Playlist API
+    // 6) Playlist / Directory API
     // ============================================================
-    bool loadTrackList();
-    size_t getTotalTracks() const;
-    std::vector<TrackInfo> listTracks() const;
 
-    bool setDirectory(const std::string& relative_dir);
-    bool playDirectory(const std::string& relative_dir);
+    /** Load (or rebuild) playlist from playlist.json on SD card */
+    bool LoadPlaylist();
 
-    bool playByName(const std::string& keyword);
-    TrackInfo getTrackInfo(int index) const;
-    bool setTrack(int index);
+    /** Get total number of tracks in current playlist */
+    size_t GetTotalTracks() const;
 
-    std::string getCurrentTrack() const;
-    std::string getCurrentTrackPath() const;
+    /** Get a copy of the full playlist */
+    std::vector<TrackInfo> GetPlaylist() const;
 
-    std::vector<std::string> listDirectories() const;
-    std::vector<TrackInfo> searchTracks(const std::string& keyword) const;
+    /** Get paginated playlist (0-based page_index) */
+    std::vector<TrackInfo> GetPlaylistPage(size_t page_index,
+                                           size_t page_size = 10) const;
 
-    std::string resolveLongName(const std::string& path);
-    std::string resolveCaseInsensitiveDir(const std::string& path);
+    /** Get track info by index */
+    TrackInfo GetTrackInfo(int index) const;
 
-    size_t countTracksInDirectory(const std::string& relative_dir);
-    size_t countTracksInCurrentDirectory() const;
+    /** Get current playlist index (-1 if none) */
+    int GetCurrentIndex() const;
 
-    std::vector<TrackInfo> listTracksPage(size_t page_index,
-                                          size_t page_size = 10) const;
-    bool rebuildPlaylistFromSd();
+    /** Set working directory (relative to SD mount point) and reload playlist */
+    bool SetDirectory(const std::string& relative_dir);
+
+    /** Get sub-directories under current root */
+    std::vector<std::string> GetDirectories() const;
+
+    /** Search tracks by keyword (name or path) */
+    std::vector<TrackInfo> SearchTracks(const std::string& keyword) const;
+
+    /** Get track count in a specific directory */
+    size_t GetTrackCountInDir(const std::string& relative_dir);
+
+    /** Get track count in current directory */
+    size_t GetTrackCount() const;
+
+    /** Force rescan SD card and rebuild playlist.json */
+    bool RebuildPlaylist();
 
     // ============================================================
-    // 7) Playback API
+    // 7) Playback control API
     // ============================================================
-    bool play();
-    void pause();
-    void stop();
 
-    bool next();
-    bool prev();
+    /**
+     * @brief Play current track (resume if paused).
+     * @return true if playback started successfully
+     */
+    bool Play();
+
+    /**
+     * @brief Play a specific file by full path.
+     * @param file_path  Absolute path, e.g. "/sdcard/Music/song.mp3"
+     * @return true if playback started successfully
+     */
+    bool Play(const std::string& file_path);
+
+    /**
+     * @brief Play a track matched by keyword (name or path substring).
+     * @param keyword  Search keyword
+     * @return true if a matching track was found and playback started
+     */
+    bool PlayByName(const std::string& keyword);
+
+    /**
+     * @brief Play all tracks in a directory.
+     * @param relative_dir  Directory relative to SD mount point
+     * @return true if directory has tracks and playback started
+     */
+    bool PlayDirectory(const std::string& relative_dir);
+
+    /** Stop current playback */
+    void Stop();
+
+    /** Pause current playback */
+    void Pause();
+
+    /** Play next track in playlist */
+    bool Next();
+
+    /** Play previous track in playlist */
+    bool Prev();
+
+    /** Jump to a specific track by index and start playing */
+    bool SetTrack(int index);
+
     bool IsPlaying() const override;
 
     // ============================================================
-    // 8) Playback Settings
+    // 8) Playback settings
     // ============================================================
-    void shuffle(bool enabled);
-    void repeat(RepeatMode mode);
+
+    void SetShuffleMode(bool enabled);
+    void SetRepeatMode(RepeatMode mode);
 
     // ============================================================
-    // 9) Query state / FFT
+    // 9) State queries
     // ============================================================
-    PlayerState getState() const;
-    TrackProgress updateProgress() const;
 
-    int64_t getDurationMs() const;
-    int64_t getCurrentPositionMs() const;
-    int getBitrate() const;
-    std::string getDurationString() const;
-    std::string getCurrentTimeString() const;
+    PlayerState GetState() const;
+    TrackProgress GetProgress() const;
+
+    int64_t GetDurationMs() const;
+    int64_t GetCurrentPositionMs() const;
+    int GetBitrate() const;
+    std::string GetDurationString() const;
+    std::string GetCurrentTimeString() const;
+
+    std::string GetCurrentTrack() const;
+    std::string GetCurrentTrackPath() const;
 
     // ============================================================
     // 10) Suggestions
     // ============================================================
-    std::vector<TrackInfo> suggestNextTracks(size_t max_results = 5);
-    std::vector<TrackInfo> suggestSimilarTo(const std::string& name_or_path,
+
+    std::vector<TrackInfo> SuggestNextTracks(size_t max_results = 5);
+    std::vector<TrackInfo> SuggestSimilarTo(const std::string& name_or_path,
                                             size_t max_results = 5);
 
     // ============================================================
-    // 11) Genre Playlists
+    // 11) Genre playlists
     // ============================================================
-    bool buildGenrePlaylist(const std::string& genre);
-    bool playGenreIndex(int pos);
-    bool playNextGenre();
-    std::vector<std::string> listGenres() const;
+
+    bool BuildGenrePlaylist(const std::string& genre);
+    bool PlayGenreIndex(int pos);
+    bool PlayNextGenre();
+    std::vector<std::string> GetGenres() const;
 
 protected:
     // ============================================================
@@ -168,7 +223,7 @@ protected:
                            int channels, int bitrate, int frame_size) override;
     void OnPcmFrame(int64_t play_time_ms, int sample_rate,
                     int channels) override;
-    void OnPlaybackFinished() override;
+    bool OnPlaybackFinishedAndContinue() override;
     void OnDisplayReady() override;
     void OnPauseStateChanged(bool paused) override;
 
@@ -176,17 +231,20 @@ private:
     // ============================================================
     // Playlist helpers
     // ============================================================
-    void scanDirectoryRecursive(const std::string& dir,
+    void ScanDirectoryRecursive(const std::string& dir,
                                 std::vector<TrackInfo>& out);
-    int findNextTrackIndex(int start, int direction);
-    bool resolveDirectoryRelative(const std::string& relative_dir,
+    int FindNextTrackIndex(int start, int direction);
+    bool ResolveDirectoryRelative(const std::string& relative_dir,
                                   std::string& out_full);
-    int findTrackIndexByKeyword(const std::string& keyword) const;
+    int FindTrackByKeyword(const std::string& keyword) const;
 
-    bool loadPlaylistFromFile(const std::string& playlist_path,
+    bool LoadPlaylistFromFile(const std::string& playlist_path,
                               std::vector<TrackInfo>& out) const;
-    bool savePlaylistToFile(const std::string& playlist_path,
+    bool SavePlaylistToFile(const std::string& playlist_path,
                             const std::vector<TrackInfo>& list) const;
+
+    std::string ResolveLongName(const std::string& path);
+    std::string ResolveCaseInsensitiveDir(const std::string& path);
 
     // ============================================================
     // Audio format detection
@@ -199,8 +257,8 @@ private:
     // ============================================================
     // History / suggestions
     // ============================================================
-    void recordPlayHistory(int index);
-    void handleNextTrack();
+    void RecordPlayHistory(int index);
+    bool HandleNextTrack();
 
 private:
     SdCard* sd_card_;

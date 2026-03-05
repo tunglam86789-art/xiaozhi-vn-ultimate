@@ -561,7 +561,7 @@ Esp32SdMusic::Esp32SdMusic()
 Esp32SdMusic::~Esp32SdMusic()
 {
     ESP_LOGI(TAG, "Destroying SD music module");
-    stop();
+    Stop();
     ESP_LOGI(TAG, "SD music module destroyed");
 }
 
@@ -580,13 +580,13 @@ void Esp32SdMusic::Initialize(class SdCard* sd_card, AudioCodec *codec) {
 // Playlist loading — using playlist.json
 // If not available / corrupted / empty → rescan and save playlist.json
 // If the file has valid content → only read, do not scan
-bool Esp32SdMusic::loadTrackList()
+bool Esp32SdMusic::LoadPlaylist()
 {
     std::vector<TrackInfo> list;
 
     if (root_directory_.empty()) {
         if (sd_card_ == nullptr || !sd_card_->IsMounted()) {
-            ESP_LOGE(TAG, "loadTrackList: SD not mounted");
+            ESP_LOGE(TAG, "LoadPlaylist: SD not mounted");
             return false;
         }
         root_directory_ = sd_card_->GetMountPoint();
@@ -596,17 +596,17 @@ bool Esp32SdMusic::loadTrackList()
     // For example: /sdcard/playlist.json or /sdcard/Music/playlist.json
     std::string playlist_path = root_directory_ + "/playlist.json";
 
-    bool loaded = loadPlaylistFromFile(playlist_path, list);
+    bool loaded = LoadPlaylistFromFile(playlist_path, list);
     if (!loaded || list.empty()) {
         ESP_LOGW(TAG,
                  "playlist.json missing/empty/invalid, scanning SD to rebuild: %s",
                  root_directory_.c_str());
 
         ESP_LOGI(TAG, "Scanning SD card: %s", root_directory_.c_str());
-        scanDirectoryRecursive(root_directory_, list);
+        ScanDirectoryRecursive(root_directory_, list);
 
         // Save playlist.json (even if the list is empty, consider it as an empty playlist)
-        if (!savePlaylistToFile(playlist_path, list)) {
+        if (!SavePlaylistToFile(playlist_path, list)) {
             ESP_LOGE(TAG, "Failed to save playlist.json: %s", playlist_path.c_str());
             return false;
         }
@@ -629,31 +629,37 @@ bool Esp32SdMusic::loadTrackList()
     return !playlist_.empty();
 }
 
-size_t Esp32SdMusic::getTotalTracks() const
+size_t Esp32SdMusic::GetTotalTracks() const
 {
     std::lock_guard<std::mutex> lock(playlist_mutex_);
     return playlist_.size();
 }
 
-std::vector<Esp32SdMusic::TrackInfo> Esp32SdMusic::listTracks() const
+std::vector<Esp32SdMusic::TrackInfo> Esp32SdMusic::GetPlaylist() const
 {
     std::lock_guard<std::mutex> lock(playlist_mutex_);
     return playlist_;
 }
 
-Esp32SdMusic::TrackInfo Esp32SdMusic::getTrackInfo(int index) const
+Esp32SdMusic::TrackInfo Esp32SdMusic::GetTrackInfo(int index) const
 {
     std::lock_guard<std::mutex> lock(playlist_mutex_);
     if (index < 0 || index >= (int)playlist_.size()) return {};
     return playlist_[index];
 }
 
+int Esp32SdMusic::GetCurrentIndex() const
+{
+    std::lock_guard<std::mutex> lock(playlist_mutex_);
+    return current_index_;
+}
+
 // Build full path + resolve FAT short / case-insensitive
-bool Esp32SdMusic::resolveDirectoryRelative(const std::string& relative_dir,
+bool Esp32SdMusic::ResolveDirectoryRelative(const std::string& relative_dir,
                                             std::string& out_full)
 {
     if (sd_card_ == nullptr || !sd_card_->IsMounted()) {
-        ESP_LOGE(TAG, "resolveDirectoryRelative: SD not mounted");
+        ESP_LOGE(TAG, "ResolveDirectoryRelative: SD not mounted");
         return false;
     }
 
@@ -668,8 +674,8 @@ bool Esp32SdMusic::resolveDirectoryRelative(const std::string& relative_dir,
         full = mount + "/" + relative_dir;
     }
 
-    full = resolveLongName(full);
-    full = resolveCaseInsensitiveDir(full);
+    full = ResolveLongName(full);
+    full = ResolveCaseInsensitiveDir(full);
 
     struct stat st{};
     if (stat(full.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
@@ -681,11 +687,11 @@ bool Esp32SdMusic::resolveDirectoryRelative(const std::string& relative_dir,
     return true;
 }
 
-bool Esp32SdMusic::setDirectory(const std::string& relative_dir)
+bool Esp32SdMusic::SetDirectory(const std::string& relative_dir)
 {
     std::string full;
-    if (!resolveDirectoryRelative(relative_dir, full)) {
-        ESP_LOGE(TAG, "setDirectory: cannot resolve %s", relative_dir.c_str());
+    if (!ResolveDirectoryRelative(relative_dir, full)) {
+        ESP_LOGE(TAG, "SetDirectory: cannot resolve %s", relative_dir.c_str());
         return false;
     }
 
@@ -695,31 +701,31 @@ bool Esp32SdMusic::setDirectory(const std::string& relative_dir)
     }
 
     ESP_LOGI(TAG, "Directory selected: %s", full.c_str());
-    return loadTrackList();
+    return LoadPlaylist();
 }
 
-bool Esp32SdMusic::playDirectory(const std::string& relative_dir)
+bool Esp32SdMusic::PlayDirectory(const std::string& relative_dir)
 {
     ESP_LOGI(TAG, "Request to play directory: %s", relative_dir.c_str());
-    if (!setDirectory(relative_dir)) {
-        ESP_LOGE(TAG, "playDirectory: cannot set directory: %s", relative_dir.c_str());
+    if (!SetDirectory(relative_dir)) {
+        ESP_LOGE(TAG, "PlayDirectory: cannot set directory: %s", relative_dir.c_str());
         return false;
     }
     {
         std::lock_guard<std::mutex> lock(playlist_mutex_);
         if (playlist_.empty()) {
-            ESP_LOGE(TAG, "playDirectory: directory is empty: %s", relative_dir.c_str());
+            ESP_LOGE(TAG, "PlayDirectory: directory is empty: %s", relative_dir.c_str());
             return false;
         }
         current_index_ = 0;
-        ESP_LOGI(TAG, "playDirectory: start track #0: %s",
+        ESP_LOGI(TAG, "PlayDirectory: start track #0: %s",
                  playlist_[0].name.c_str());
     }
-    return play();
+    return Play();
 }
 
 // Find index by keyword (name or path)
-int Esp32SdMusic::findTrackIndexByKeyword(const std::string& keyword) const
+int Esp32SdMusic::FindTrackByKeyword(const std::string& keyword) const
 {
     if (keyword.empty()) return -1;
 
@@ -740,10 +746,10 @@ int Esp32SdMusic::findTrackIndexByKeyword(const std::string& keyword) const
     return -1;
 }
 
-bool Esp32SdMusic::playByName(const std::string& keyword)
+bool Esp32SdMusic::PlayByName(const std::string& keyword)
 {
     if (keyword.empty()) {
-        ESP_LOGW(TAG, "playByName(): empty keyword");
+        ESP_LOGW(TAG, "PlayByName(): empty keyword");
         return false;
     }
 
@@ -751,21 +757,21 @@ bool Esp32SdMusic::playByName(const std::string& keyword)
     {
         std::lock_guard<std::mutex> lock(playlist_mutex_);
         if (playlist_.empty()) {
-            ESP_LOGW(TAG, "playByName(): playlist empty — reloading");
+            ESP_LOGW(TAG, "PlayByName(): playlist empty — reloading");
             need_reload = true;
         }
     }
 
     if (need_reload) {
-        if (!loadTrackList()) {
-            ESP_LOGE(TAG, "playByName(): Cannot load playlist");
+        if (!LoadPlaylist()) {
+            ESP_LOGE(TAG, "PlayByName(): Cannot load playlist");
             return false;
         }
     }
 
-    int found_index = findTrackIndexByKeyword(keyword);
+    int found_index = FindTrackByKeyword(keyword);
     if (found_index < 0) {
-        ESP_LOGW(TAG, "playByName(): no match for '%s'", keyword.c_str());
+        ESP_LOGW(TAG, "PlayByName(): no match for '%s'", keyword.c_str());
         return false;
     }
 
@@ -775,28 +781,28 @@ bool Esp32SdMusic::playByName(const std::string& keyword)
             return false;
         }
         current_index_ = found_index;
-        ESP_LOGI(TAG, "playByName(): matched track #%d → %s",
+        ESP_LOGI(TAG, "PlayByName(): matched track #%d → %s",
                  found_index, playlist_[found_index].name.c_str());
     }
 
-    return play();
+    return Play();
 }
 
-std::string Esp32SdMusic::getCurrentTrack() const
+std::string Esp32SdMusic::GetCurrentTrack() const
 {
     std::lock_guard<std::mutex> lock(playlist_mutex_);
     if (current_index_ < 0 || current_index_ >= (int)playlist_.size()) return "";
     return playlist_[current_index_].name;
 }
 
-std::string Esp32SdMusic::getCurrentTrackPath() const
+std::string Esp32SdMusic::GetCurrentTrackPath() const
 {
     std::lock_guard<std::mutex> lock(playlist_mutex_);
     if (current_index_ < 0 || current_index_ >= (int)playlist_.size()) return "";
     return playlist_[current_index_].path;
 }
 
-std::vector<std::string> Esp32SdMusic::listDirectories() const
+std::vector<std::string> Esp32SdMusic::GetDirectories() const
 {
     std::vector<std::string> dirs;
 
@@ -829,7 +835,7 @@ std::vector<std::string> Esp32SdMusic::listDirectories() const
 }
 
 std::vector<Esp32SdMusic::TrackInfo>
-Esp32SdMusic::searchTracks(const std::string& keyword) const
+Esp32SdMusic::SearchTracks(const std::string& keyword) const
 {
     std::vector<TrackInfo> results;
     if (keyword.empty()) return results;
@@ -850,7 +856,7 @@ Esp32SdMusic::searchTracks(const std::string& keyword) const
     return results;
 }
 
-std::vector<std::string> Esp32SdMusic::listGenres() const
+std::vector<std::string> Esp32SdMusic::GetGenres() const
 {
     std::vector<std::string> genres;
     std::unordered_set<std::string> uniq;
@@ -871,7 +877,7 @@ std::vector<std::string> Esp32SdMusic::listGenres() const
     return genres;
 }
 
-std::string Esp32SdMusic::resolveCaseInsensitiveDir(const std::string& path)
+std::string Esp32SdMusic::ResolveCaseInsensitiveDir(const std::string& path)
 {
     size_t pos = path.find_last_of('/');
     if (pos == std::string::npos)
@@ -911,22 +917,22 @@ std::string Esp32SdMusic::resolveCaseInsensitiveDir(const std::string& path)
     return path;
 }
 
-bool Esp32SdMusic::setTrack(int index)
+bool Esp32SdMusic::SetTrack(int index)
 {
     {
         std::lock_guard<std::mutex> lock(playlist_mutex_);
         if (index < 0 || index >= (int)playlist_.size()) {
-            ESP_LOGE(TAG, "setTrack: index %d out of range", index);
+            ESP_LOGE(TAG, "SetTrack: index %d out of range", index);
             return false;
         }
         current_index_ = index;
         ESP_LOGI(TAG, "Switching to track #%d: %s",
                  index, playlist_[index].name.c_str());
     }
-    return play();
+    return Play();
 }
 
-void Esp32SdMusic::scanDirectoryRecursive(
+void Esp32SdMusic::ScanDirectoryRecursive(
     const std::string& dir,
     std::vector<TrackInfo>& out)
 {
@@ -951,7 +957,7 @@ void Esp32SdMusic::scanDirectoryRecursive(
         }
 
         if (S_ISDIR(st.st_mode)) {
-            scanDirectoryRecursive(full, out);
+            ScanDirectoryRecursive(full, out);
             continue;
         }
 
@@ -981,13 +987,13 @@ void Esp32SdMusic::scanDirectoryRecursive(
 
 // Rebuild playlist according to user request (MCP calls this function)
 // Ignore the current playlist.json content, always rescan and overwrite
-bool Esp32SdMusic::rebuildPlaylistFromSd()
+bool Esp32SdMusic::RebuildPlaylist()
 {
     std::vector<TrackInfo> list;
 
     if (root_directory_.empty()) {
         if (sd_card_ == nullptr || !sd_card_->IsMounted()) {
-            ESP_LOGE(TAG, "rebuildPlaylistFromSd: SD not mounted");
+            ESP_LOGE(TAG, "RebuildPlaylist: SD not mounted");
             return false;
         }
         root_directory_ = sd_card_->GetMountPoint();
@@ -996,10 +1002,10 @@ bool Esp32SdMusic::rebuildPlaylistFromSd()
     ESP_LOGI(TAG, "Rebuilding playlist by scanning directory: %s",
              root_directory_.c_str());
 
-    scanDirectoryRecursive(root_directory_, list);
+    ScanDirectoryRecursive(root_directory_, list);
 
     std::string playlist_path = root_directory_ + "/playlist.json";
-    if (!savePlaylistToFile(playlist_path, list)) {
+    if (!SavePlaylistToFile(playlist_path, list)) {
         ESP_LOGE(TAG, "Failed to save playlist.json after rebuild");
         return false;
     }
@@ -1022,7 +1028,7 @@ bool Esp32SdMusic::rebuildPlaylistFromSd()
 }
 
 // JSON Playlist: stores all the necessary metadata for searching/finding songs (does not store cover art).
-bool Esp32SdMusic::savePlaylistToFile(const std::string& playlist_path,
+bool Esp32SdMusic::SavePlaylistToFile(const std::string& playlist_path,
                                       const std::vector<TrackInfo>& list) const
 {
     FILE* fp = fopen(playlist_path.c_str(), "wb");
@@ -1087,7 +1093,7 @@ bool Esp32SdMusic::savePlaylistToFile(const std::string& playlist_path,
     return true;
 }
 
-bool Esp32SdMusic::loadPlaylistFromFile(const std::string& playlist_path,
+bool Esp32SdMusic::LoadPlaylistFromFile(const std::string& playlist_path,
                                         std::vector<TrackInfo>& out) const
 {
     FILE* fp = fopen(playlist_path.c_str(), "rb");
@@ -1212,13 +1218,13 @@ bool Esp32SdMusic::loadPlaylistFromFile(const std::string& playlist_path,
     return true;
 }
 
-std::string Esp32SdMusic::resolveLongName(const std::string& path)
+std::string Esp32SdMusic::ResolveLongName(const std::string& path)
 {
     // Do not handle short-name 8.3 → return the original path
     return path;
 }
 
-int Esp32SdMusic::findNextTrackIndex(int start, int direction)
+int Esp32SdMusic::FindNextTrackIndex(int start, int direction)
 {
     if (playlist_.empty()) return -1;
     int count = static_cast<int>(playlist_.size());
@@ -1228,10 +1234,10 @@ int Esp32SdMusic::findNextTrackIndex(int start, int direction)
     return result;
 }
 
-size_t Esp32SdMusic::countTracksInDirectory(const std::string& relative_dir)
+size_t Esp32SdMusic::GetTrackCountInDir(const std::string& relative_dir)
 {
     std::string full;
-    if (!resolveDirectoryRelative(relative_dir, full)) {
+    if (!ResolveDirectoryRelative(relative_dir, full)) {
         return 0;
     }
 
@@ -1254,14 +1260,14 @@ size_t Esp32SdMusic::countTracksInDirectory(const std::string& relative_dir)
     return count;
 }
 
-size_t Esp32SdMusic::countTracksInCurrentDirectory() const
+size_t Esp32SdMusic::GetTrackCount() const
 {
     std::lock_guard<std::mutex> lock(playlist_mutex_);
     return playlist_.size();
 }
 
 std::vector<Esp32SdMusic::TrackInfo>
-Esp32SdMusic::listTracksPage(size_t page_index, size_t page_size) const
+Esp32SdMusic::GetPlaylistPage(size_t page_index, size_t page_size) const
 {
     std::vector<TrackInfo> result;
     if (page_size == 0) return result;
@@ -1285,13 +1291,13 @@ Esp32SdMusic::listTracksPage(size_t page_index, size_t page_size) const
 //      SHUFFLE / REPEAT / PLAY-PAUSE-STOP / THREAD / DECODE
 // ============================================================================
 
-void Esp32SdMusic::shuffle(bool enabled)
+void Esp32SdMusic::SetShuffleMode(bool enabled)
 {
     shuffle_enabled_ = enabled;
     ESP_LOGI(TAG, "Shuffle: %s", enabled ? "ON" : "OFF");
 }
 
-void Esp32SdMusic::repeat(RepeatMode mode)
+void Esp32SdMusic::SetRepeatMode(RepeatMode mode)
 {
     repeat_mode_ = mode;
     const char* mode_str =
@@ -1307,14 +1313,14 @@ bool Esp32SdMusic::IsPlaying() const
             st != PlayerState::Error);
 }
 
-bool Esp32SdMusic::play()
+bool Esp32SdMusic::Play()
 {
     {
         std::lock_guard<std::mutex> lock(playlist_mutex_);
 
         if (playlist_.empty()) {
             ESP_LOGW(TAG, "Playlist empty — reloading");
-            loadTrackList();
+            LoadPlaylist();
             if (playlist_.empty()) {
                 ESP_LOGE(TAG, "No audio files found on SD");
                 return false;
@@ -1387,7 +1393,7 @@ bool Esp32SdMusic::play()
     }
 
     state_.store(PlayerState::Preparing);
-    recordPlayHistory(current_index_);
+    RecordPlayHistory(current_index_);
 
     if (!StartStream(track.path, dec_type)) {
         ESP_LOGE(TAG, "Failed to start stream for: %s", track.path.c_str());
@@ -1399,7 +1405,45 @@ bool Esp32SdMusic::play()
     return true;
 }
 
-void Esp32SdMusic::pause()
+bool Esp32SdMusic::Play(const std::string& file_path)
+{
+    if (file_path.empty()) {
+        ESP_LOGW(TAG, "Play(file_path): empty path");
+        return false;
+    }
+
+    // Try to find the track in the current playlist
+    int idx = FindTrackByKeyword(file_path);
+    if (idx >= 0) {
+        std::lock_guard<std::mutex> lock(playlist_mutex_);
+        current_index_ = idx;
+    } else {
+        // File not in playlist — add it temporarily and set as current
+        struct stat st{};
+        if (stat(file_path.c_str(), &st) != 0) {
+            ESP_LOGE(TAG, "Play(file_path): file not found: %s", file_path.c_str());
+            return false;
+        }
+
+        TrackInfo t;
+        t.path      = file_path;
+        t.file_size = st.st_size;
+        t.name      = ExtractBaseNameNoExt(file_path);
+
+        ReadId3v2_Safe(file_path, t);
+        ReadId3v1(file_path, t);
+        if (!t.title.empty()) t.name = t.title;
+
+        std::lock_guard<std::mutex> lock(playlist_mutex_);
+        playlist_.push_back(std::move(t));
+        play_count_.push_back(0);
+        current_index_ = static_cast<int>(playlist_.size()) - 1;
+    }
+
+    return Play();
+}
+
+void Esp32SdMusic::Pause()
 {
     if (state_.load() == PlayerState::Playing) {
         ESP_LOGI(TAG, "Pausing playback");
@@ -1408,7 +1452,7 @@ void Esp32SdMusic::pause()
     }
 }
 
-void Esp32SdMusic::stop()
+void Esp32SdMusic::Stop()
 {
     PlayerState st = state_.load();
 
@@ -1424,7 +1468,7 @@ void Esp32SdMusic::stop()
     ESP_LOGI(TAG, "SD music stopped successfully");
 }
 
-bool Esp32SdMusic::next()
+bool Esp32SdMusic::Next()
 {
     {
         std::lock_guard<std::mutex> lock(playlist_mutex_);
@@ -1438,15 +1482,16 @@ bool Esp32SdMusic::next()
                 current_index_ = new_i;
             }
         } else {
-            current_index_ = findNextTrackIndex(current_index_, +1);
+            current_index_ = FindNextTrackIndex(current_index_, +1);
         }
-        ESP_LOGI(TAG, "Next track → #%d: %s",
+        ESP_LOGW(TAG, "Next track → #%d: %s",
                  current_index_, playlist_[current_index_].name.c_str());
     }
-    return play();
+    state_.store(PlayerState::Stopped);
+    return Play();
 }
 
-bool Esp32SdMusic::prev()
+bool Esp32SdMusic::Prev()
 {
     {
         std::lock_guard<std::mutex> lock(playlist_mutex_);
@@ -1460,15 +1505,16 @@ bool Esp32SdMusic::prev()
                 current_index_ = new_i;
             }
         } else {
-            current_index_ = findNextTrackIndex(current_index_, -1);
+            current_index_ = FindNextTrackIndex(current_index_, -1);
         }
-        ESP_LOGI(TAG, "Previous track → #%d: %s",
+        ESP_LOGW(TAG, "Previous track → #%d: %s",
                  current_index_, playlist_[current_index_].name.c_str());
     }
-    return play();
+    state_.store(PlayerState::Stopped);
+    return Play();
 }
 
-void Esp32SdMusic::recordPlayHistory(int index)
+void Esp32SdMusic::RecordPlayHistory(int index)
 {
     if (index < 0) return;
 
@@ -1589,22 +1635,20 @@ void Esp32SdMusic::OnPcmFrame(int64_t play_time_ms, int sample_rate,
     }
 }
 
-void Esp32SdMusic::OnPlaybackFinished()
+bool Esp32SdMusic::OnPlaybackFinishedAndContinue()
 {
     ESP_LOGI(TAG, "Playback finished");
-
     // If stopped explicitly, don't auto-advance
     if (state_.load() == PlayerState::Stopped) {
-        return;
+        return false;
     }
-
     // Genre playlist auto-advance
     if (!genre_playlist_.empty()) {
-        if (playNextGenre()) return;
+        if (PlayNextGenre()) return true;
     }
 
     // Handle repeat / next track logic
-    handleNextTrack();
+    return HandleNextTrack();
 }
 
 void Esp32SdMusic::OnDisplayReady()
@@ -1649,7 +1693,7 @@ size_t Esp32SdMusic::SkipId3Tag(uint8_t* data, size_t size)
     return total;
 }
 
-void Esp32SdMusic::handleNextTrack()
+bool Esp32SdMusic::HandleNextTrack()
 {
     int next_index = -1;
 
@@ -1658,7 +1702,7 @@ void Esp32SdMusic::handleNextTrack()
 
         if (playlist_.empty()) {
             state_.store(PlayerState::Stopped);
-            return;
+            return false;
         }
 
         switch (repeat_mode_) {
@@ -1676,7 +1720,7 @@ void Esp32SdMusic::handleNextTrack()
                     } while (new_i == current_index_);
                     next_index = new_i;
                 } else {
-                    next_index = findNextTrackIndex(current_index_, +1);
+                    next_index = FindNextTrackIndex(current_index_, +1);
                 }
                 break;
 
@@ -1684,20 +1728,17 @@ void Esp32SdMusic::handleNextTrack()
             default:
                 ESP_LOGI(TAG, "[No repeat] → stop");
 
-                if (current_index_ == (int)playlist_.size() - 1) {
-                    state_.store(PlayerState::Stopped);
-                    return;
-                }
-
-                next_index = findNextTrackIndex(current_index_, +1);
+                state_.store(PlayerState::Stopped);
+                next_index = -1;
                 break;
         }
     }
 
     if (next_index >= 0) {
         current_index_ = next_index;
-        play();
+        return Play();
     }
+    return false;
 }
 
 // ============================================================================
@@ -1705,7 +1746,7 @@ void Esp32SdMusic::handleNextTrack()
 //      DECODER UTIL / STATE / PROGRESS / SONG SUGGESTIONS
 // ============================================================================
 
-Esp32SdMusic::TrackProgress Esp32SdMusic::updateProgress() const
+Esp32SdMusic::TrackProgress Esp32SdMusic::GetProgress() const
 {
     TrackProgress p;
     p.position_ms = GetPlayTimeMs();
@@ -1713,12 +1754,12 @@ Esp32SdMusic::TrackProgress Esp32SdMusic::updateProgress() const
     return p;
 }
 
-Esp32SdMusic::PlayerState Esp32SdMusic::getState() const
+Esp32SdMusic::PlayerState Esp32SdMusic::GetState() const
 {
     return state_.load();
 }
 
-int Esp32SdMusic::getBitrate() const
+int Esp32SdMusic::GetBitrate() const
 {
     std::lock_guard<std::mutex> lock(playlist_mutex_);
     if (current_index_ >= 0 && current_index_ < (int)playlist_.size()) {
@@ -1727,29 +1768,29 @@ int Esp32SdMusic::getBitrate() const
     return 0;
 }
 
-int64_t Esp32SdMusic::getDurationMs() const
+int64_t Esp32SdMusic::GetDurationMs() const
 {
     return total_duration_ms_.load();
 }
 
-int64_t Esp32SdMusic::getCurrentPositionMs() const
+int64_t Esp32SdMusic::GetCurrentPositionMs() const
 {
     return GetPlayTimeMs();
 }
 
-std::string Esp32SdMusic::getDurationString() const
+std::string Esp32SdMusic::GetDurationString() const
 {
     return MsToTimeString(total_duration_ms_.load());
 }
 
-std::string Esp32SdMusic::getCurrentTimeString() const
+std::string Esp32SdMusic::GetCurrentTimeString() const
 {
     return MsToTimeString(GetPlayTimeMs());
 }
 
 // Suggest the next track based on play history
 std::vector<Esp32SdMusic::TrackInfo>
-Esp32SdMusic::suggestNextTracks(size_t max_results)
+Esp32SdMusic::SuggestNextTracks(size_t max_results)
 {
     std::vector<TrackInfo> results;
     if (max_results == 0) return results;
@@ -1809,7 +1850,7 @@ Esp32SdMusic::suggestNextTracks(size_t max_results)
 
 // Suggest tracks similar to track X
 std::vector<Esp32SdMusic::TrackInfo>
-Esp32SdMusic::suggestSimilarTo(const std::string& name_or_path,
+Esp32SdMusic::SuggestSimilarTo(const std::string& name_or_path,
                                size_t max_results)
 {
     std::vector<TrackInfo> results;
@@ -1818,19 +1859,19 @@ Esp32SdMusic::suggestSimilarTo(const std::string& name_or_path,
     {
         std::lock_guard<std::mutex> lock(playlist_mutex_);
         if (playlist_.empty()) {
-            ESP_LOGW(TAG, "suggestSimilarTo(): playlist empty — reloading");
+            ESP_LOGW(TAG, "SuggestSimilarTo(): playlist empty — reloading");
         }
     }
     if (playlist_.empty()) {
-        if (!loadTrackList()) {
-            ESP_LOGE(TAG, "suggestSimilarTo(): cannot load playlist");
+        if (!LoadPlaylist()) {
+            ESP_LOGE(TAG, "SuggestSimilarTo(): cannot load playlist");
             return results;
         }
     }
 
-    int base_index = findTrackIndexByKeyword(name_or_path);
+    int base_index = FindTrackByKeyword(name_or_path);
     if (base_index < 0) {
-        return suggestNextTracks(max_results);
+        return SuggestNextTracks(max_results);
     }
 
     std::vector<TrackInfo> playlist_copy;
@@ -1877,7 +1918,7 @@ Esp32SdMusic::suggestSimilarTo(const std::string& name_or_path,
 }
 
 // Build a playlist by genre (from ID3v1 / ID3v2)
-bool Esp32SdMusic::buildGenrePlaylist(const std::string& genre)
+bool Esp32SdMusic::BuildGenrePlaylist(const std::string& genre)
 {
     std::string kw = ToLowerAscii(genre);
     if (kw.empty()) return false;
@@ -1908,7 +1949,7 @@ bool Esp32SdMusic::buildGenrePlaylist(const std::string& genre)
     return true;
 }
 
-bool Esp32SdMusic::playGenreIndex(int pos)
+bool Esp32SdMusic::PlayGenreIndex(int pos)
 {
     if (genre_playlist_.empty())
         return false;
@@ -1928,15 +1969,15 @@ bool Esp32SdMusic::playGenreIndex(int pos)
 
     genre_current_pos_ = pos;
 
-    ESP_LOGI(TAG, "Play genre-track [%d/%d] → index %d (%s)",
+    ESP_LOGW(TAG, "Play genre-track [%d/%d] → index %d (%s)",
              pos + 1, (int)genre_playlist_.size(),
              track_index,
              playlist_[track_index].name.c_str());
 
-    return play();
+    return Play();
 }
 
-bool Esp32SdMusic::playNextGenre()
+bool Esp32SdMusic::PlayNextGenre()
 {
     if (genre_playlist_.empty())
         return false;
@@ -1959,10 +2000,10 @@ bool Esp32SdMusic::playNextGenre()
         current_index_ = track_index;
     }
 
-    ESP_LOGI(TAG, "Next genre track → pos=%d → index=%d (%s)",
+    ESP_LOGW(TAG, "Next genre track → pos=%d → index=%d (%s)",
              next_pos,
              track_index,
              playlist_[track_index].name.c_str());
 
-    return play();
+    return Play();
 }

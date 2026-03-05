@@ -77,7 +77,7 @@ protected:
     void OnPrepareHttp(void* http_ptr) override;
     void OnStreamInfoReady(int sample_rate, int bits_per_sample, int channels, int bitrate, int frame_size) override;
     void OnPcmFrame(int64_t play_time_ms, int sample_rate, int channels) override;
-    void OnPlaybackFinished() override;
+    bool OnPlaybackFinishedAndContinue() override;
     void OnDisplayReady() override;
 
 private:

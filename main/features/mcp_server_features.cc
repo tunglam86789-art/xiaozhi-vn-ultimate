@@ -309,19 +309,20 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
             std::string action = props["action"].value<std::string>();
 
             if (action == "play") {
-                if (sd_music->getTotalTracks() == 0) {
-                    if (!sd_music->loadTrackList()) {
+                if (sd_music->GetTotalTracks() == 0) {
+                    if (!sd_music->LoadPlaylist()) {
                         return "{\"success\": false, \"message\": \"No MP3 files found on SD card\"}";
                     }
                 }
-                bool ok = sd_music->play();
+                sd_music->SetEndCallback(nullptr); // Clear any existing callback
+                bool ok = sd_music->Play();
                 return ok ? "{\"success\": true, \"message\": \"Playback started\"}"
                           : "{\"success\": false, \"message\": \"Failed to play\"}";
             }
-            if (action == "pause") { sd_music->pause(); return true; }
-            if (action == "stop")  { sd_music->stop();  return true; }
-            if (action == "next")  { return sd_music->next(); }
-            if (action == "prev")  { return sd_music->prev(); }
+            if (action == "pause") { sd_music->Pause(); return true; }
+            if (action == "stop")  { sd_music->Stop();  return true; }
+            if (action == "next")  { return sd_music->Next(); }
+            if (action == "prev")  { return sd_music->Prev(); }
             return "{\"success\":false,\"message\":\"Unknown playback action\"}";
         });
 
@@ -341,20 +342,20 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
 
             if (action == "shuffle") {
                 bool enabled = props["enabled"].value<bool>();
-                sd_music->shuffle(enabled);
+                sd_music->SetShuffleMode(enabled);
                 if (enabled) {
-                    if (sd_music->getTotalTracks() == 0) sd_music->loadTrackList();
-                    if (sd_music->getTotalTracks() == 0) return false;
-                    int idx = rand() % sd_music->getTotalTracks();
-                    sd_music->setTrack(idx);
+                    if (sd_music->GetTotalTracks() == 0) sd_music->LoadPlaylist();
+                    if (sd_music->GetTotalTracks() == 0) return false;
+                    int idx = rand() % sd_music->GetTotalTracks();
+                    sd_music->SetTrack(idx);
                 }
                 return true;
             }
             if (action == "repeat") {
                 std::string mode = props["mode"].value<std::string>();
-                if (mode == "none")      sd_music->repeat(Esp32SdMusic::RepeatMode::None);
-                else if (mode == "one")  sd_music->repeat(Esp32SdMusic::RepeatMode::RepeatOne);
-                else if (mode == "all")  sd_music->repeat(Esp32SdMusic::RepeatMode::RepeatAll);
+                if (mode == "none")      sd_music->SetRepeatMode(Esp32SdMusic::RepeatMode::None);
+                else if (mode == "one")  sd_music->SetRepeatMode(Esp32SdMusic::RepeatMode::RepeatOne);
+                else if (mode == "all")  sd_music->SetRepeatMode(Esp32SdMusic::RepeatMode::RepeatAll);
                 else return "Invalid repeat mode";
                 return true;
             }
@@ -377,16 +378,16 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
             std::string action = props["action"].value<std::string>();
 
             auto ensure_playlist = [sd_music]() {
-                if (sd_music->getTotalTracks() == 0) sd_music->loadTrackList();
+                if (sd_music->GetTotalTracks() == 0) sd_music->LoadPlaylist();
             };
 
             if (action == "set") {
                 ensure_playlist();
-                return sd_music->setTrack(props["index"].value<int>());
+                return sd_music->SetTrack(props["index"].value<int>());
             }
             if (action == "info") {
                 ensure_playlist();
-                auto info = sd_music->getTrackInfo(props["index"].value<int>());
+                auto info = sd_music->GetTrackInfo(props["index"].value<int>());
                 cJSON* json = cJSON_CreateObject();
                 cJSON_AddStringToObject(json, "name",    info.name.c_str());
                 cJSON_AddStringToObject(json, "path",    info.path.c_str());
@@ -408,12 +409,12 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
             if (action == "list") {
                 ensure_playlist();
                 cJSON* o = cJSON_CreateObject();
-                cJSON_AddNumberToObject(o, "count", (int)sd_music->getTotalTracks());
+                cJSON_AddNumberToObject(o, "count", (int)sd_music->GetTotalTracks());
                 return o;
             }
             if (action == "current") {
                 ensure_playlist();
-                return sd_music->getCurrentTrack();
+                return sd_music->GetCurrentTrack();
             }
             return "Unknown track action";
         });
@@ -433,14 +434,14 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
 
             if (action == "play") {
                 std::string dir = props["directory"].value<std::string>();
-                if (!sd_music->playDirectory(dir)) {
+                if (!sd_music->PlayDirectory(dir)) {
                     return "{\"success\": false, \"message\": \"Cannot play directory or has no MP3\"}";
                 }
                 return "{\"success\": true, \"message\": \"Playing directory\"}";
             }
             if (action == "list") {
                 cJSON* arr = cJSON_CreateArray();
-                auto list = sd_music->listDirectories();
+                auto list = sd_music->GetDirectories();
                 for (auto& d : list) {
                     cJSON_AddItemToArray(arr, cJSON_CreateString(d.c_str()));
                 }
@@ -464,13 +465,13 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
             std::string keyword = props["keyword"].value<std::string>();
 
             auto ensure_playlist = [sd_music]() {
-                if (sd_music->getTotalTracks() == 0) sd_music->loadTrackList();
+                if (sd_music->GetTotalTracks() == 0) sd_music->LoadPlaylist();
             };
 
             if (action == "search") {
                 cJSON* arr = cJSON_CreateArray();
                 ensure_playlist();
-                auto list = sd_music->searchTracks(keyword);
+                auto list = sd_music->SearchTracks(keyword);
                 for (auto& t : list) {
                     cJSON* o = cJSON_CreateObject();
                     cJSON_AddStringToObject(o, "name",    t.name.c_str());
@@ -494,7 +495,7 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
                 if (keyword.empty())
                     return "{\"success\": false, \"message\": \"Keyword cannot be empty\"}";
                 ensure_playlist();
-                bool ok = sd_music->playByName(keyword);
+                bool ok = sd_music->PlayByName(keyword);
                 return ok ? "{\"success\": true, \"message\": \"Playing song by name\"}"
                           : "{\"success\": false, \"message\": \"Song not found\"}";
             }
@@ -518,20 +519,20 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
             std::string action = props["action"].value<std::string>();
 
             auto ensure_playlist = [sd_music]() {
-                if (sd_music->getTotalTracks() == 0) sd_music->loadTrackList();
+                if (sd_music->GetTotalTracks() == 0) sd_music->LoadPlaylist();
             };
 
             if (action == "count_dir") {
                 std::string dir = props["directory"].value<std::string>();
                 cJSON* o = cJSON_CreateObject();
                 cJSON_AddStringToObject(o, "directory", dir.c_str());
-                cJSON_AddNumberToObject(o, "count", (int)sd_music->countTracksInDirectory(dir));
+                cJSON_AddNumberToObject(o, "count", (int)sd_music->GetTrackCountInDir(dir));
                 return o;
             }
             if (action == "count_current") {
                 ensure_playlist();
                 cJSON* o = cJSON_CreateObject();
-                cJSON_AddNumberToObject(o, "count", (int)sd_music->countTracksInCurrentDirectory());
+                cJSON_AddNumberToObject(o, "count", (int)sd_music->GetTrackCount());
                 return o;
             }
             if (action == "page") {
@@ -542,7 +543,7 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
                 if (page_size <= 0) page_size = 10;
 
                 size_t page_index = (size_t)(page - 1);
-                auto list = sd_music->listTracksPage(page_index, (size_t)page_size);
+                auto list = sd_music->GetPlaylistPage(page_index, (size_t)page_size);
                 size_t start_index = page_index * (size_t)page_size;
 
                 cJSON* arr = cJSON_CreateArray();
@@ -576,7 +577,7 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
         "Return: JSON báo thành công / thất bại.",
         PropertyList(),
         [sd_music](const PropertyList&) -> ReturnValue {
-            if (sd_music->rebuildPlaylistFromSd()) {
+            if (sd_music->RebuildPlaylist()) {
                 return "{\"success\": false, \"message\": \"Failed to rescan SD card\"}";
             }
             return "{\"success\": true, \"message\": \"SD playlist reloaded\"}";
@@ -598,7 +599,7 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
             std::string action = props["action"].value<std::string>();
 
             auto ensure_playlist = [sd_music]() {
-                if (sd_music->getTotalTracks() == 0) sd_music->loadTrackList();
+                if (sd_music->GetTotalTracks() == 0) sd_music->LoadPlaylist();
             };
             ensure_playlist();
 
@@ -625,9 +626,9 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
             };
 
             if (action == "next") {
-                for (auto& t : sd_music->suggestNextTracks((size_t)max_results)) add_track(t);
+                for (auto& t : sd_music->SuggestNextTracks((size_t)max_results)) add_track(t);
             } else if (action == "similar") {
-                for (auto& t : sd_music->suggestSimilarTo(keyword, (size_t)max_results)) add_track(t);
+                for (auto& t : sd_music->SuggestSimilarTo(keyword, (size_t)max_results)) add_track(t);
             }
             return arr;
         });
@@ -638,9 +639,9 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
         PropertyList(),
         [sd_music](const PropertyList&) -> ReturnValue {
             cJSON* o = cJSON_CreateObject();
-            auto prog  = sd_music->updateProgress();
-            auto state = sd_music->getState();
-            int  br    = sd_music->getBitrate();
+            auto prog  = sd_music->GetProgress();
+            auto state = sd_music->GetState();
+            int  br    = sd_music->GetBitrate();
 
             const char* s = "unknown";
             switch (state) {
@@ -655,10 +656,10 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
             cJSON_AddNumberToObject(o, "duration_ms", (int)prog.duration_ms);
             cJSON_AddStringToObject(o, "state",        s);
             cJSON_AddNumberToObject(o, "bitrate_kbps", br);
-            cJSON_AddStringToObject(o, "position_str", sd_music->getCurrentTimeString().c_str());
-            cJSON_AddStringToObject(o, "duration_str", sd_music->getDurationString().c_str());
-            cJSON_AddStringToObject(o, "track_name",   sd_music->getCurrentTrack().c_str());
-            cJSON_AddStringToObject(o, "track_path",   sd_music->getCurrentTrackPath().c_str());
+            cJSON_AddStringToObject(o, "position_str", sd_music->GetCurrentTimeString().c_str());
+            cJSON_AddStringToObject(o, "duration_str", sd_music->GetDurationString().c_str());
+            cJSON_AddStringToObject(o, "track_name",   sd_music->GetCurrentTrack().c_str());
+            cJSON_AddStringToObject(o, "track_path",   sd_music->GetCurrentTrackPath().c_str());
             return o;
         });
 
@@ -676,7 +677,7 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
             std::string genre  = props["genre"].value<std::string>();
 
             auto ensure_playlist = [sd_music]() {
-                if (sd_music->getTotalTracks() == 0) sd_music->loadTrackList();
+                if (sd_music->GetTotalTracks() == 0) sd_music->LoadPlaylist();
             };
             ensure_playlist();
 
@@ -691,7 +692,7 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
             if (action == "search") {
                 cJSON* arr = cJSON_CreateArray();
                 if (genre.empty()) return arr;
-                auto all  = sd_music->listTracks();
+                auto all  = sd_music->GetPlaylist();
                 auto low  = ascii_lower(genre);
                 for (auto& t : all) {
                     if (ascii_lower(t.genre).find(low) != std::string::npos) {
@@ -710,19 +711,19 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
             if (action == "play") {
                 if (genre.empty())
                     return "{\"success\": false, \"message\": \"Genre cannot be empty\"}";
-                if (!sd_music->buildGenrePlaylist(genre))
+                if (!sd_music->BuildGenrePlaylist(genre))
                     return "{\"success\": false, \"message\": \"No tracks found for this genre\"}";
-                bool ok = sd_music->playGenreIndex(0);
+                bool ok = sd_music->PlayGenreIndex(0);
                 return ok ? "{\"success\": true, \"message\": \"Playing first track of genre\"}"
                           : "{\"success\": false, \"message\": \"Failed to play genre\"}";
             }
             if (action == "play_index") {
-                bool ok = sd_music->playGenreIndex(props["index"].value<int>());
+                bool ok = sd_music->PlayGenreIndex(props["index"].value<int>());
                 return ok ? "{\"success\": true, \"message\": \"Playing track in genre list\"}"
                           : "{\"success\": false, \"message\": \"Index invalid or genre list empty\"}";
             }
             if (action == "next") {
-                bool ok = sd_music->playNextGenre();
+                bool ok = sd_music->PlayNextGenre();
                 return ok ? "{\"success\": true, \"message\": \"Playing next track in genre\"}"
                           : "{\"success\": false, \"message\": \"No next track or no active genre mode\"}";
             }
@@ -735,8 +736,8 @@ void McpFeatureTools::RegisterSdMusicTools(Esp32SdMusic* sd_music) {
         PropertyList(),
         [sd_music](const PropertyList&) -> ReturnValue {
             cJSON* arr = cJSON_CreateArray();
-            if (sd_music->getTotalTracks() == 0) sd_music->loadTrackList();
-            for (auto& g : sd_music->listGenres()) {
+            if (sd_music->GetTotalTracks() == 0) sd_music->LoadPlaylist();
+            for (auto& g : sd_music->GetGenres()) {
                 cJSON_AddItemToArray(arr, cJSON_CreateString(g.c_str()));
             }
             return arr;

@@ -269,7 +269,8 @@ void Esp32Radio::OnDisplayReady()
     station_name_displayed_ = true;
 }
 
-void Esp32Radio::OnPlaybackFinished()
+bool Esp32Radio::OnPlaybackFinishedAndContinue()
 {
     ESP_LOGI(TAG, "Radio playback finished");
+    return false;
 }

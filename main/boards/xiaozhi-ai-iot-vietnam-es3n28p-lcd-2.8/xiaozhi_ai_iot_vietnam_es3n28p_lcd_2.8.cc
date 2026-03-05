@@ -352,9 +352,9 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
               auto& app = Application::GetInstance();
               auto sd_music = app.GetSdMusic();
               if (sd_music) {
-                sd_music->stop();
+                sd_music->Stop();
                 vTaskDelay(pdMS_TO_TICKS(500));
-                sd_music->next();
+                sd_music->Next();
               }
             } else {
               auto& board = Board::GetInstance();
@@ -381,9 +381,9 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
               auto& app = Application::GetInstance();
               auto sd_music = app.GetSdMusic();
               if (sd_music) {
-                sd_music->stop();
+                sd_music->Stop();
                 vTaskDelay(pdMS_TO_TICKS(500));
-                sd_music->prev();
+                sd_music->Prev();
               }
               break;
             }
@@ -444,7 +444,9 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
               auto sd_music = app.GetSdMusic();
               if (sd_music) {
                 ESP_LOGI(TAG, "Toggle Play/Pause");
-                sd_music->play();
+                sd_music->SetRepeatMode(Esp32SdMusic::RepeatMode::RepeatAll);
+                sd_music->SetShuffleMode(true);
+                sd_music->Play();
               }
             } else {
               GetAudioCodec()->SetOutputVolume(0);

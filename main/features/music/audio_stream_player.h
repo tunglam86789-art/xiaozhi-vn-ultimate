@@ -41,7 +41,7 @@ class AudioCodec;
 /* ------------------------------------------------------------------ */
 
 /** Enable static task creation (1 = enabled, 0 = disabled) */
-#define AUDIO_STREAM_STATIC_TASK_CREATION  0
+#define AUDIO_STREAM_STATIC_TASK_CREATION  1
 
 /** Maximum audio buffer size (bytes) -- limits PSRAM usage */
 #define AUDIO_BUF_MAX_SIZE          (256 * 1024)
@@ -118,7 +118,7 @@ enum class AudioPlayerState {
 using AudioStateCallback = std::function<void(AudioPlayerState old_state, AudioPlayerState new_state)>;
 
 /** Called when a stream finishes (naturally or stopped) */
-using AudioEndCallback = std::function<void(const std::string& source)>;
+using AudioEndCallback = std::function<bool(const std::string& source)>;
 
 /** Called with FFT-ready PCM data for spectrum display */
 using AudioFftCallback = std::function<void(int16_t* pcm_data, size_t pcm_bytes)>;
@@ -243,7 +243,7 @@ protected:
                             int channels) {}
 
     /** Called when playback finishes (naturally or stopped). */
-    virtual void OnPlaybackFinished() {}
+    virtual bool OnPlaybackFinishedAndContinue() { return false; }
 
     /** Called once when FFT display canvas is ready. */
     virtual void OnDisplayReady() {}

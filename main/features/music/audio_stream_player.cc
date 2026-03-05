@@ -34,7 +34,15 @@ AudioStreamPlayer::AudioStreamPlayer()
       display_mode_(DISPLAY_MODE_SPECTRUM),
       volume_factor_(AUDIO_DEFAULT_VOLUME),
       source_task_handle_(nullptr),
+#if AUDIO_STREAM_STATIC_TASK_CREATION == 1
+      source_task_buffer_(nullptr),
+      source_task_stack_(nullptr),
+#endif
       play_task_handle_(nullptr),
+#if AUDIO_STREAM_STATIC_TASK_CREATION == 1
+      play_task_buffer_(nullptr),
+      play_task_stack_(nullptr),
+#endif
       pause_sem_(nullptr),
       buffer_mutex_(nullptr),
       buffer_data_sem_(nullptr),
@@ -207,12 +215,14 @@ bool AudioStreamPlayer::StopStream()
         }
         source_task_handle_ = nullptr;
 #if AUDIO_STREAM_STATIC_TASK_CREATION == 1
-        assert(source_task_buffer_ != nullptr);
-        assert(source_task_stack_ != nullptr);
-        heap_caps_free(source_task_buffer_);
-        source_task_buffer_ = nullptr;
-        heap_caps_free(source_task_stack_);
-        source_task_stack_ = nullptr;
+        if (source_task_buffer_) {
+            heap_caps_free(source_task_buffer_);
+            source_task_buffer_ = nullptr;
+        }
+        if (source_task_stack_) {
+            heap_caps_free(source_task_stack_);
+            source_task_stack_ = nullptr;
+        }
 #endif
     }
 
@@ -227,26 +237,31 @@ bool AudioStreamPlayer::StopStream()
         }
         play_task_handle_ = nullptr;
 #if AUDIO_STREAM_STATIC_TASK_CREATION == 1
-        assert(play_task_buffer_ != nullptr);
-        assert(play_task_stack_ != nullptr);
-        heap_caps_free(play_task_buffer_);
-        play_task_buffer_ = nullptr;
-        heap_caps_free(play_task_stack_);
-        play_task_stack_ = nullptr;
+        if (play_task_buffer_) {
+            heap_caps_free(play_task_buffer_);
+            play_task_buffer_ = nullptr;
+        }
+        if (play_task_stack_) {
+            heap_caps_free(play_task_stack_);
+            play_task_stack_ = nullptr;
+        }
 #endif
     }
 
     ClearAudioBuffer();
     CleanupDecoder();
     ResetSampleRate();
-    OnPlaybackFinished();
+    bool continue_playing = OnPlaybackFinishedAndContinue();
 
     /* Notify end callback */
     if (end_callback_) {
-        end_callback_(stream_url_);
+        continue_playing = end_callback_(stream_url_);
     }
 
-    SetPlayerState(AudioPlayerState::Idle);
+    if (!continue_playing) 
+    {
+        SetPlayerState(AudioPlayerState::Idle);
+    }
 
     ESP_LOGI(TAG, "Stream stopped");
     return true;
@@ -492,8 +507,17 @@ void AudioStreamPlayer::PlayLoop()
     if (was_playing) {
         ClearAudioBuffer();
         ResetSampleRate();
-        OnPlaybackFinished();
-        SetPlayerState(AudioPlayerState::Idle);
+
+        bool continue_playing = OnPlaybackFinishedAndContinue();
+        /* Notify end callback */
+        if (end_callback_) {
+            continue_playing = end_callback_(stream_url_);
+        }
+
+        if (!continue_playing) 
+        {
+            SetPlayerState(AudioPlayerState::Idle);
+        }
     }
 
     ESP_LOGI(TAG, "PlayLoop finished");
