@@ -152,7 +152,7 @@ private:
         esp_lcd_panel_reset(panel);
 
         esp_lcd_panel_init(panel);
-        esp_lcd_panel_invert_color(panel, true);
+        esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR);
 
         Settings settings("lcd_display", true);
         bool is_landscape = settings.GetInt("lcd_mode", 1) != 0;
