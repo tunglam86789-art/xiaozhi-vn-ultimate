@@ -74,12 +74,14 @@ static const gc9a01_lcd_init_cmd_t gc9107_lcd_init_cmds[] = {
 };
 #endif
  
-#define TAG "CompactWifiBoardLCD"
+#define TAG "XiaozhiAIIoTVietNamDTD"
 
-class CompactWifiBoardLCD : public WifiBoard {
+class XiaozhiAIIoTVietNamDTD : public WifiBoard {
 private:
  
     Button boot_button_;
+    Button volume_up_button_;
+    Button volume_down_button_;
     LcdDisplay* display_;
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
     LcdTouch *touch_;
@@ -164,7 +166,7 @@ private:
         if (tp->config.user_data == NULL) {
             return;
         }
-        CompactWifiBoardLCD *board = static_cast<CompactWifiBoardLCD *>(tp->config.user_data);
+        XiaozhiAIIoTVietNamDTD *board = static_cast<XiaozhiAIIoTVietNamDTD *>(tp->config.user_data);
         board->NotifyTouchEvent();
     }
 
@@ -266,7 +268,7 @@ private:
         
         touch_->SetRatioXY(2.0f);
         touch_->SetSwipeThreshold(60); // pixels
-        
+                            
         touch_->SetInterruptCallback([this]()->bool {
             return this->WaitForTouchEvent();
         });
@@ -371,15 +373,16 @@ private:
                 music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
                 if (source == music::SourceType::NONE) {
-                auto& app = Application::GetInstance();
-                auto sd_music = app.GetSdMusic();
-                if (sd_music) {
-                    ESP_LOGI(TAG, "Toggle Play/Pause");
-                    sd_music->Play();
+                    auto &app = Application::GetInstance();
+                    auto sd_music = app.GetSdMusic();
+                    if (sd_music) {
+                        ESP_LOGI(TAG, "Toggle Play/Pause");
+                        sd_music->Play();
+                    }
                 }
-                } else {
-                GetAudioCodec()->SetOutputVolume(0);
-                GetDisplay()->ShowNotification(Lang::Strings::MUTED);
+                else {
+                    GetAudioCodec()->SetOutputVolume(0);
+                    GetDisplay()->ShowNotification(Lang::Strings::MUTED);
                 }
             }
             break;
@@ -402,16 +405,48 @@ private:
             }
             app.ToggleChatState();
         });
+
+        volume_up_button_.OnClick([this]() {
+            auto codec = GetAudioCodec();
+            auto volume = codec->output_volume() + 10;
+            if (volume > 100) {
+                volume = 100;
+            }
+            codec->SetOutputVolume(volume);
+            GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+        });
+
+        volume_up_button_.OnLongPress([this]() {
+            GetAudioCodec()->SetOutputVolume(100);
+            GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
+        });
+
+        volume_down_button_.OnClick([this]() {
+            auto codec = GetAudioCodec();
+            auto volume = codec->output_volume() - 10;
+            if (volume < 0) {
+                volume = 0;
+            }
+            codec->SetOutputVolume(volume);
+            GetDisplay()->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+        });
+
+        volume_down_button_.OnLongPress([this]() {
+            GetAudioCodec()->SetOutputVolume(0);
+            GetDisplay()->ShowNotification(Lang::Strings::MUTED);
+        });
     }
 
-    // IoT initialization, adding support for AI visible devices
+    // Initialize IoT tools, adding support for AI visible devices
     void InitializeTools() {
         static LampController lamp(LAMP_GPIO);
     }
 
 public:
-    CompactWifiBoardLCD() :
-        boot_button_(BOOT_BUTTON_GPIO) {
+    XiaozhiAIIoTVietNamDTD() :
+        boot_button_(BOOT_BUTTON_GPIO),
+        volume_up_button_(VOLUME_UP_BUTTON_GPIO),
+        volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
         InitializeSpi();
         InitializeLcdDisplay();
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
@@ -422,7 +457,6 @@ public:
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
         }
-        
     }
 
     virtual Led* GetLed() override {
@@ -444,6 +478,10 @@ public:
     virtual Display* GetDisplay() override {
         return display_;
     }
+
+#ifdef CONFIG_TOUCH_PANEL_ENABLE
+    virtual LcdTouch *GetTouch() override { return touch_; }
+#endif
 
     virtual Backlight* GetBacklight() override {
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
@@ -481,4 +519,4 @@ public:
 #endif
 };
 
-DECLARE_BOARD(CompactWifiBoardLCD);
+DECLARE_BOARD(XiaozhiAIIoTVietNamDTD);

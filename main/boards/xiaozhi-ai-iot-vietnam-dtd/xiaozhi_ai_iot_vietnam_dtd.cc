@@ -278,8 +278,7 @@ private:
         switch (gesture) {
             case TOUCH_GESTURE_SWIPE_RIGHT:
             {
-                auto* viz = Application::GetInstance().GetMusicVisualizer();
-                music::SourceType source = viz ? viz->DetectSource() : music::SourceType::NONE;
+                music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
                 if (source == music::SourceType::SD_CARD) {
                 ESP_LOGI(TAG, "Play Next track");
@@ -308,8 +307,7 @@ private:
             break;
             case TOUCH_GESTURE_SWIPE_LEFT:
             {
-                auto* viz = Application::GetInstance().GetMusicVisualizer();
-                music::SourceType source = viz ? viz->DetectSource() : music::SourceType::NONE;
+                music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
                 if (source == music::SourceType::SD_CARD) {
                 ESP_LOGI(TAG, "Play Previous track");
@@ -372,8 +370,7 @@ private:
             case TOUCH_GESTURE_LONG_PRESS:
             ESP_LOGW(TAG, "Long Press at (%d, %d)", x, y);
             {
-                auto* viz = Application::GetInstance().GetMusicVisualizer();
-                music::SourceType source = viz ? viz->DetectSource() : music::SourceType::NONE;
+                music::SourceType source = Application::GetInstance().BuildMusicInfo().source;
                 ESP_LOGI(TAG, "Current source detected: %d", static_cast<int>(source));
                 if (source == music::SourceType::NONE) {
                 auto& app = Application::GetInstance();
