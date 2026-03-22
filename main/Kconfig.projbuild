@@ -589,6 +589,17 @@ config MIC_HIGH_PASS_FILTER_ENABLE
     help
         Enable high pass filter for audio input to reduce low-frequency noise
 
+config MIC_HIGH_PASS_FILTER_USE_ESP_DSP
+    bool "Use ESP-DSP biquad filter (hardware-optimized)"
+    depends on MIC_HIGH_PASS_FILTER_ENABLE
+    default y
+    help
+        Use Espressif DSP Library biquad IIR filter instead of the simple
+        software first-order RC filter. The biquad implementation is a
+        second-order Butterworth high-pass filter processed by
+        dsps_biquad_f32 which leverages platform-specific assembly
+        optimizations on ESP32/ESP32-S3 for better performance.
+
 choice DISPLAY_ESP32S3_KORVO2_V3
     depends on BOARD_TYPE_ESP_KORVO2_V3
     prompt "ESP32S3_KORVO2_V3 LCD Type"
