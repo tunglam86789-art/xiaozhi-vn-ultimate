@@ -385,7 +385,10 @@ void Application::Start() {
     audio_service_.Initialize(codec);
 #ifdef CONFIG_MIC_HIGH_PASS_FILTER_ENABLE
     // Enable high pass filter to reduce low frequency noise
-    audio_service_.SetHighPassFilter(new HighPassFilter());
+    {
+        float gain = CONFIG_MIC_HIGH_PASS_FILTER_GAIN / 100.0f;
+        audio_service_.SetHighPassFilter(new HighPassFilter(gain));
+    }
 #endif
     audio_service_.Start();
     // codec->SetOutputVolume(10);

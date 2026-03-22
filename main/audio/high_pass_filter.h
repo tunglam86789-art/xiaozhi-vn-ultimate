@@ -15,6 +15,12 @@
 #include <cmath>
 #include <cstring>
 
+// Default filter parameters
+#define HPF_DEFAULT_GAIN        1.0f     // Unity gain (no amplification)
+#define HPF_DEFAULT_CUTOFF_HZ   100.0f   // High-pass cutoff frequency in Hz
+#define HPF_DEFAULT_SAMPLE_RATE 16000.0f // Sample rate in Hz
+#define HPF_BUTTERWORTH_Q       0.707f   // Butterworth Q factor (maximally flat passband)
+
 #ifdef CONFIG_MIC_HIGH_PASS_FILTER_USE_ESP_DSP
 #include "dsps_biquad_gen.h"
 #include "dsps_biquad.h"
@@ -22,15 +28,16 @@
 
 class HighPassFilter {
 public:
-    // Initialize filter with cutoff frequency and sample rate
-    // For voice: cutoff = 100Hz, sample_rate = 16000Hz
-    HighPassFilter(float cutoff_freq = 100.0f, float sample_rate = 16000.0f) {
+    // Initialize filter with gain, cutoff frequency and sample rate
+    // gain: linear multiplier applied after filtering (1.0 = no change, 2.0 = +6dB)
+    HighPassFilter(float gain = HPF_DEFAULT_GAIN,
+                   float cutoff_freq = HPF_DEFAULT_CUTOFF_HZ,
+                   float sample_rate = HPF_DEFAULT_SAMPLE_RATE)
+        : gain_(gain) {
 #ifdef CONFIG_MIC_HIGH_PASS_FILTER_USE_ESP_DSP
         // Normalized frequency for biquad: f = cutoff / sample_rate
         float freq = cutoff_freq / sample_rate;
-        // Butterworth Q factor for maximally flat passband
-        float q_factor = 0.707f;
-        dsps_biquad_gen_hpf_f32(coeffs_, freq, q_factor);
+        dsps_biquad_gen_hpf_f32(coeffs_, freq, HPF_BUTTERWORTH_Q);
         memset(delay_, 0, sizeof(delay_));
 #else
         // Calculate filter coefficient using RC time constant
@@ -51,6 +58,7 @@ public:
         float in = static_cast<float>(input);
         float out;
         dsps_biquad_f32(&in, &out, 1, coeffs_, delay_);
+        out *= gain_;
         if (out > 32767.0f) out = 32767.0f;
         if (out < -32768.0f) out = -32768.0f;
         return static_cast<int16_t>(out);
@@ -61,7 +69,8 @@ public:
         prev_input_ = input;
         prev_output_ = output;
         
-        // Clamp to int16_t range
+        // Apply gain and clamp to int16_t range
+        output *= gain_;
         if (output > 32767.0f) output = 32767.0f;
         if (output < -32768.0f) output = -32768.0f;
         
@@ -83,7 +92,7 @@ public:
         dsps_biquad_f32(buf, buf, static_cast<int>(samples), coeffs_, delay_);
 
         for (size_t i = 0; i < samples; i++) {
-            float val = buf[i];
+            float val = buf[i] * gain_;
             if (val > 32767.0f) val = 32767.0f;
             if (val < -32768.0f) val = -32768.0f;
             data[i] = static_cast<int16_t>(val);
@@ -116,6 +125,7 @@ private:
     float prev_input_;
     float prev_output_;
 #endif
+    float gain_;        // linear gain applied after filtering
 };
 
 #endif // HIGH_PASS_FILTER_H
