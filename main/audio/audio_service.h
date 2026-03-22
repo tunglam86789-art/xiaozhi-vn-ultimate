@@ -23,6 +23,8 @@
 #include "wake_word.h"
 #include "protocol.h"
 
+#include "high_pass_filter.h"
+
 /* Enable static task creation (1 = enabled, 0 = disabled) */
 #define AUDIO_SERVICE_STATIC_TASK_CREATION 1
 
@@ -112,6 +114,7 @@ public:
     void ResetDecoder();
     void UpdateOutputTimestamp();
     void SetModelsList(srmodel_list_t* models_list);
+    void SetHighPassFilter(HighPassFilter* high_pass_filter) { high_pass_filter_ = high_pass_filter; }
 
 private:
     AudioCodec* codec_ = nullptr;
@@ -126,6 +129,7 @@ private:
     OpusResampler output_resampler_;
     DebugStatistics debug_statistics_;
     srmodel_list_t* models_list_ = nullptr;
+    HighPassFilter* high_pass_filter_ = nullptr;
 
     EventGroupHandle_t event_group_;
 

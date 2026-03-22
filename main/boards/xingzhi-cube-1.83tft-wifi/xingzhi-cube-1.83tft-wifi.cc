@@ -22,14 +22,100 @@
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
 
-#define TAG "XINGZHI_CUBE_1_54TFT_WIFI"
+#define TAG "XINGZHI_CUBE_1_83TFT_WIFI"
 
-class XINGZHI_CUBE_1_54TFT_WIFI : public WifiBoard {
+extern "C" const lv_image_dsc_t xiaozhi_ai_iot_vietnam_logo;
+
+#if CONFIG_DISPLAYS_NV3023_SUPPORTED == true
+#include <esp_lcd_nv3023.h>
+static const nv3023_lcd_init_cmd_t lcd_init_cmds[] = {
+    {0xfd,(const uint8_t[]){0x06,0x08},2,0},
+	{0x61,(const uint8_t[]){0x07,0x04},2,0},
+	{0x62,(const uint8_t[]){0x00,0x44,0x45},3,0},
+	{0x63,(const uint8_t[]){0x41,0x07,0x12,0x12},4,0},
+	{0x64,(const uint8_t[]){0x37},1,0},
+	{0x65,(const uint8_t[]){0x09,0x10,0x21},3,0},
+	{0x66,(const uint8_t[]){0x09,0x10,0x21},3,0},
+	{0x67,(const uint8_t[]){0x20,0x40},2,0},
+	{0x68,(const uint8_t[]){0x90,0x4c,0x7C,0x66},4,0},
+	{0xb1,(const uint8_t[]){0x0F,0x02,0x01},3,0},
+	{0xB4,(const uint8_t[]){0x01},1,0},
+	{0xB5,(const uint8_t[]){0x02,0x02,0x0a,0x14},4,0},
+	{0xB6,(const uint8_t[]){0x04,0x01,0x9f,0x00,0x02},5,0},
+	{0xdf,(const uint8_t[]){0x11},1,0},
+	{0xE2,(const uint8_t[]){0x13,0x00,0x00,0x30,0x33,0x3f},6,0},
+	{0xE5,(const uint8_t[]){0x3f,0x33,0x30,0x00,0x00,0x13},6,0},
+	{0xE1,(const uint8_t[]){0x00,0x57},2,0},
+	{0xE4,(const uint8_t[]){0x58,0x00},2,0},
+	{0xE0,(const uint8_t[]){0x01,0x03,0x0d,0x0e,0x0e,0x0c,0x15,0x19},8,0},
+	{0xE3,(const uint8_t[]){0x1a,0x16,0x0C,0x0f,0x0e,0x0d,0x02,0x01},8,0},
+	{0xE6,(const uint8_t[]){0x00,0xff},2,0},
+	{0xE7,(const uint8_t[]){0x01,0x04,0x03,0x03,0x00,0x12},6,0},
+	{0xE8,(const uint8_t[]){0x00,0x70,0x00},3,0},
+	{0xEc,(const uint8_t[]){0x52},1,0},
+	{0xF1,(const uint8_t[]){0x01,0x01,0x02},3,0},
+	{0xF6,(const uint8_t[]){0x09,0x10,0x00,0x00},4,0},
+	{0xfd,(const uint8_t[]){0xfa,0xfc},2,0},
+	{0x3a,(const uint8_t[]){0x05},1,0},
+	{0x35,(const uint8_t[]){0x00},1,0},
+	{0x36,(const uint8_t[]){0x08},1,0},
+	{0x36,(const uint8_t[]){0xc8},1,0},
+	{0x36,(const uint8_t[]){0x78},1,0},
+	{0x36,(const uint8_t[]){0xa8},1,0},
+	{0x21,(const uint8_t[]){0},0,0},
+	{0x11,(const uint8_t[]){0},0,200},
+	{0x29,(const uint8_t[]){0},0,10},
+};
+#endif
+
+class LogoLcdDisplay : public SpiLcdDisplay {
+public:
+    LogoLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+                  int width, int height, int offset_x, int offset_y,
+                  bool mirror_x, bool mirror_y, bool swap_xy)
+        : SpiLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy) {}
+
+    void Logo() {
+        DisplayLockGuard lock(this);
+        lv_obj_t * img = lv_img_create(lv_layer_top());
+        if (img == NULL) {
+            ESP_LOGE(TAG, "Failed to create LVGL image object");
+            return;
+        }
+
+        LV_IMG_DECLARE(xiaozhi_ai_iot_vietnam_logo);
+        lv_img_set_src(img, &xiaozhi_ai_iot_vietnam_logo);
+        if (lv_img_get_src(img) == NULL) {
+            ESP_LOGE("LVGL", "Failed to load image from /spiffs/logo.png");
+            lv_obj_del(img);
+            return;
+        }
+
+        lv_obj_center(img);
+        ESP_LOGI("LVGL", "load image from logo.png");
+
+        const TickType_t end_time = xTaskGetTickCount() + pdMS_TO_TICKS(4000);
+        while (xTaskGetTickCount() < end_time) {
+            lv_task_handler();
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+
+        if (img != NULL && lv_obj_is_valid(img)) {
+            ESP_LOGI("LVGL", "Deleting image object");
+            lv_obj_del(img);
+        } else {
+            ESP_LOGE("LVGL", "Image object is invalid or already deleted");
+        }
+
+    }
+};
+
+class XINGZHI_CUBE_1_83TFT_WIFI : public WifiBoard {
 private:
     Button boot_button_;
     Button volume_up_button_;
     Button volume_down_button_;
-    SpiLcdDisplay* display_;
+    LogoLcdDisplay* display_;
     PowerSaveTimer* power_save_timer_;
     PowerManager* power_manager_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
@@ -127,8 +213,11 @@ private:
         });
     }
 
-    void InitializeSt7789Display() {
+    void InitializeLcdDisplay() {
         ESP_LOGD(TAG, "Install panel IO");
+#if CONFIG_DISPLAYS_NV3023_SUPPORTED == true
+        esp_lcd_panel_io_spi_config_t io_config = NV3023_PANEL_IO_SPI_CONFIG(DISPLAY_CS, DISPLAY_DC, NULL, NULL);
+#else
         esp_lcd_panel_io_spi_config_t io_config = {};
         io_config.cs_gpio_num = DISPLAY_CS;
         io_config.dc_gpio_num = DISPLAY_DC;
@@ -137,6 +226,7 @@ private:
         io_config.trans_queue_depth = 10;
         io_config.lcd_cmd_bits = 8;
         io_config.lcd_param_bits = 8;
+#endif
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io_));
 
         ESP_LOGD(TAG, "Install LCD driver");
@@ -144,19 +234,29 @@ private:
         panel_config.reset_gpio_num = DISPLAY_RES;
         panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
         panel_config.bits_per_pixel = 16;
+#if CONFIG_DISPLAYS_NV3023_SUPPORTED == true
+        nv3023_vendor_config_t vendor_config = {  // Uncomment these lines if use custom initialization commands
+            .init_cmds = lcd_init_cmds,
+            .init_cmds_size = sizeof(lcd_init_cmds) / sizeof(nv3023_lcd_init_cmd_t),
+        };
+        panel_config.vendor_config = &vendor_config;
+        ESP_ERROR_CHECK(esp_lcd_new_panel_nv3023(panel_io_, &panel_config, &panel_));
+#else
         ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io_, &panel_config, &panel_));
+#endif
         ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_));
         ESP_ERROR_CHECK(esp_lcd_panel_init(panel_));
         ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_, DISPLAY_SWAP_XY));
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, true));
+        ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_, true));
 
-        display_ = new SpiLcdDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, 
+        display_ = new LogoLcdDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, 
             DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
 public:
-    XINGZHI_CUBE_1_54TFT_WIFI() :
+    XINGZHI_CUBE_1_83TFT_WIFI() :
         boot_button_(BOOT_BUTTON_GPIO),
         volume_up_button_(VOLUME_UP_BUTTON_GPIO),
         volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
@@ -164,8 +264,9 @@ public:
         InitializePowerSaveTimer();
         InitializeSpi();
         InitializeButtons();
-        InitializeSt7789Display();
+        InitializeLcdDisplay();
         GetBacklight()->RestoreBrightness();
+        display_->Logo();
     }
 
     virtual AudioCodec* GetAudioCodec() override {
@@ -237,4 +338,4 @@ public:
 #endif
 };
 
-DECLARE_BOARD(XINGZHI_CUBE_1_54TFT_WIFI);
+DECLARE_BOARD(XINGZHI_CUBE_1_83TFT_WIFI);

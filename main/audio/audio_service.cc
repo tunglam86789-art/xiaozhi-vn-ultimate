@@ -280,6 +280,10 @@ void AudioService::AudioInputTask() {
                     }
                     data = std::move(mono_data);
                 }
+                // Apply high pass filter if configured
+                if (high_pass_filter_ != nullptr) {
+                    high_pass_filter_->ProcessBuffer(data.data(), data.size());
+                }
                 PushTaskToEncodeQueue(kAudioTaskTypeEncodeToTestingQueue, std::move(data));
                 continue;
             }

@@ -43,6 +43,7 @@
 #define VOLUME_UP_BUTTON_GPIO   GPIO_NUM_39
 #define VOLUME_DOWN_BUTTON_GPIO GPIO_NUM_40
 
+#define CONFIG_DISPLAYS_NV3023_SUPPORTED false // Set to true if using the NV3023 display controller
 #define DISPLAY_SDA GPIO_NUM_10
 #define DISPLAY_SCL GPIO_NUM_9
 #define DISPLAY_DC GPIO_NUM_8
@@ -50,16 +51,16 @@
 #define DISPLAY_RES GPIO_NUM_18
 #define DISPLAY_WIDTH   284
 #define DISPLAY_HEIGHT  240
-#define DISPLAY_SWAP_XY  false
+#define DISPLAY_SWAP_XY  true
 #define DISPLAY_MIRROR_X false
-#define DISPLAY_MIRROR_Y false
+#define DISPLAY_MIRROR_Y true
 #define BACKLIGHT_INVERT false
-#define DISPLAY_OFFSET_X  0
+#define DISPLAY_OFFSET_X  36
 #define DISPLAY_OFFSET_Y  0
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_13
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
 
-#define SECONDS_TO_SLEEP_MODE   (60U * 5U)  // 5 minutes
+#define SECONDS_TO_SLEEP_MODE   (60U * 15U)  // 15 minutes
 #define SECONDS_TO_SHUTDOWN     (60U * 60U * 12U) // 12 hours
 
 #endif // _BOARD_CONFIG_H_

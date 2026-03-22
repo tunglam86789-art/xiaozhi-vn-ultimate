@@ -383,6 +383,10 @@ void Application::Start() {
     /* Setup the audio service */
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
+#ifdef CONFIG_MIC_HIGH_PASS_FILTER_ENABLE
+    // Enable high pass filter to reduce low frequency noise
+    audio_service_.SetHighPassFilter(new HighPassFilter());
+#endif
     audio_service_.Start();
     // codec->SetOutputVolume(10);
 

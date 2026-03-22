@@ -31,6 +31,7 @@
 #include "pm.h"
 
 #define TAG "XINGZHI_CUBE_1_83TFT_WIFI_1ST"
+extern "C" const lv_image_dsc_t xiaozhi_ai_iot_vietnam_logo;
 static const nv3023_lcd_init_cmd_t lcd_init_cmds[] = {
     {0xfd,(const uint8_t[]){0x06,0x08},2,0},
 	{0x61,(const uint8_t[]){0x07,0x04},2,0},

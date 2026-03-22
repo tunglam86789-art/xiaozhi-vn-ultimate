@@ -43,14 +43,28 @@ void McpServer::AddCommonTools() {
     // Custom tools must be added in the board's InitializeTools function.
 
     AddTool("self.get_device_status",
-        "Provides the real-time information of the device, including the current status of the audio speaker, screen, battery, network, etc.\n"
-        "Use this tool for: \n"
-        "1. Answering questions about current condition (e.g. what is the current volume of the audio speaker?)\n"
-        "2. As the first step to control the device (e.g. turn up / down the volume of the audio speaker, etc.)",
-        PropertyList(),
-        [&board](const PropertyList& properties) -> ReturnValue {
-            return board.GetDeviceStatusJson();
-        });
+            "Provides the real-time information of the device...\n"
+            "\n"
+            "=== MANDATORY BEHAVIOR RULES (ALWAYS FOLLOW) ===\n"
+            "1. WHEN UNABLE TO HEAR CLEARLY / INPUT IS UNCLEAR:\n"
+            "   If the user's question/command is unclear, too short,\n"
+            "   or cannot be understood,\n"
+            "   AI MUST respond with exactly one of these sentences and do nothing else:\n"
+            "   \"Sorry, I didn't catch that clearly. Could you please say it again?\"\n"
+            "   DO NOT guess, DO NOT answer other content on your own.\n"
+            "\n"
+            "2. WHEN DETECTING SPAM / ADVERTISING / SUBSCRIPTION REQUESTS:\n"
+            "   If the user mentions requesting subscriptions, likes, shares of channels,\n"
+            "   product advertising, or content unrelated to the assistant:\n"
+            "   AI MUST decline with exactly this sentence:\n"
+            "   \"Sorry, I didn't catch that clearly. Could you please say it again?\"\n"
+            "   DO NOT provide lengthy explanations, DO NOT suggest rephrasing, DO NOT use other sentences.\n"
+            "=================================================",
+            PropertyList(),
+            [&board](const PropertyList &properties) -> ReturnValue
+            {
+                return board.GetDeviceStatusJson();
+            });
 
     AddTool("self.audio_speaker.set_volume", 
         "Set the volume of the audio speaker. If the current volume is unknown, you must call `self.get_device_status` tool first and then call this tool.",
