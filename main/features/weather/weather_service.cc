@@ -156,7 +156,7 @@ bool WeatherService::FetchWeatherData() {
     
     // Auto-detect city if not set
     if (city.empty() || city == "auto") {
-        ESP_LOGI(TAG, "City not set or 'auto', detecting via IP...");
+        ESP_LOGW(TAG, "City not set or 'auto', detecting via IP...");
         
         for (int i = 0; i < 2; i++) {
             std::string auto_city = GetCityFromIP();
@@ -171,6 +171,8 @@ bool WeatherService::FetchWeatherData() {
             ESP_LOGW(TAG, "Failed to detect IP location, fallback to Hanoi");
             city = CITY_LOCATION_DEFAULT;
         }
+    } else {
+        ESP_LOGW(TAG, "Using configured city: %s", city.c_str());
     }
 
     // Fetch current weather and forecast data
@@ -183,7 +185,7 @@ bool WeatherService::FetchWeatherData() {
 }
 
 bool WeatherService::FetchCurrentWeatherData(const std::string& city, const std::string& api_key) {
-    std::string url = std::string(WEATHER_API_ENDPOINT) + "?q=" + UrlEncode(city) +
+    std::string url = std::string(WEATHER_API_ENDPOINT) + "weather?q=" + UrlEncode(city) +
                       "&appid=" + api_key + "&units=metric&lang=vi";
 
     ESP_LOGI(TAG, "Fetching current weather from: %s", url.c_str());
@@ -262,7 +264,7 @@ bool WeatherService::FetchCurrentWeatherData(const std::string& city, const std:
 }
 
 bool WeatherService::FetchForecastData(const std::string& city, const std::string& api_key) {    
-    std::string url_forecast = "https://api.openweathermap.org/data/2.5/forecast?q=" + UrlEncode(city) +
+    std::string url_forecast = std::string(WEATHER_API_ENDPOINT) + "forecast?q=" + UrlEncode(city) +
                                 "&appid=" + api_key + "&units=metric&cnt=40";
     ESP_LOGI(TAG, "Fetching forecast from: %s", url_forecast.c_str());
 

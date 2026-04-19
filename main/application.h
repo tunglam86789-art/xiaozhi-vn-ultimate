@@ -211,6 +211,9 @@ private:
     int clock_ticks_ = 0;
     TaskHandle_t check_new_version_task_handle_ = nullptr;
     TaskHandle_t main_event_loop_task_handle_ = nullptr;
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
+    TaskHandle_t weather_idle_task_handle_ = nullptr;
+#endif
 
     /**
      * @brief Identifies which media component to exclude from stopping.
@@ -243,6 +246,7 @@ private:
 
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
     // --- Weather Info ---
+    void StartWeatherIdleTask();
     void UpdateIdleDisplay();
     // -------------------
 #endif

@@ -31,6 +31,7 @@
 #include <arpa/inet.h>
 #include <font_awesome.h>
 #include "features/weather/weather_ui.h"
+#include "ml307_board.h"
 #define TAG "Application"
 
 
@@ -417,6 +418,11 @@ void Application::Start() {
     /* Wait for the network to be ready */
     board.StartNetwork();
 
+#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
+    // Start the independent weather idle display task after network is ready
+    StartWeatherIdleTask();
+#endif
+
     // Register network tool — pass overlay callback so the QR canvas can
     // hide/restore the host display's normal UI while it is visible.
     // SetMediaOverlayActive is virtual: works for both LCD and OLED.
@@ -680,31 +686,7 @@ void Application::MainEventLoop() {
                 // SystemInfo::PrintTaskList();
                 SystemInfo::PrintHeapStats();
             }
-#ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
-            if (device_state_ == kDeviceStateIdle) {
-                if (IsMediaPlaying())
-                {
-                    // When music/radio is playing, hide the idle screen
-                    display->HideIdleCard();
-                } else {
-                    // Update the clock every second
-                    UpdateIdleDisplay();
 
-                    // Weather fetch logic: call at the 5th second after boot OR every 30 minutes (1800 seconds)
-                    if (clock_ticks_ == 5 || clock_ticks_ % 1800 == 0) {
-                        ESP_LOGI(TAG, "Khoi tao Task lay thoi tiet...");
-                        xTaskCreate([](void* arg) {
-                            auto& weather_service = WeatherService::GetInstance();
-                            if (weather_service.FetchWeatherData()) {
-                                Application* app = static_cast<Application*>(arg);
-                                app->UpdateIdleDisplay();
-                            }
-                            vTaskDelete(NULL);
-                        }, "weather_task", 1024 * 4, this, 5, NULL);
-                    }
-                }
-            }
-#endif
         }
     }
 }
@@ -1664,30 +1646,54 @@ bool Application::InitVideo() {
 
 // --- [DienBien Mod]- WEATHER SCREEN UPDATE----
 #ifdef CONFIG_WEATHER_IDLE_DISPLAY_ENABLE
+void Application::StartWeatherIdleTask() {
+    xTaskCreate([](void* arg) {
+        Application* app = static_cast<Application*>(arg);
+        int tick_count = 0;
+        while (true) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            tick_count++;
+
+            if (app->GetDeviceState() == kDeviceStateIdle) {
+                if (app->IsMediaPlaying()) {
+                    // When music/radio is playing, hide the idle screen
+                    auto display = Board::GetInstance().GetDisplay();
+                    display->HideIdleCard();
+                } else {
+                    // Update the clock every second
+                    app->UpdateIdleDisplay();
+
+                    // Weather fetch logic: call at the 5th second after boot OR every 30 minutes (1800 seconds)
+                    if (tick_count == 5 || tick_count % 1800 == 0) {
+                        ESP_LOGI(TAG, "Khoi tao Task lay thoi tiet...");
+                        auto& weather_service = WeatherService::GetInstance();
+                        if (weather_service.FetchWeatherData()) {
+                            app->UpdateIdleDisplay();
+                        }
+                    }
+                }
+            }
+        }
+        vTaskDelete(NULL);
+    }, "weather_idle_task", 1024 * 6, this, 2, &weather_idle_task_handle_);
+}
+
 void Application::UpdateIdleDisplay() {
     auto& weather_service = WeatherService::GetInstance();
     const WeatherInfo& weather_info = weather_service.GetWeatherInfo();
     
     IdleCardInfo card;
-    
-    // 1. THỜI GIAN
-    time_t now = time(nullptr);
-    struct tm tm_buf;
-    if (localtime_r(&now, &tm_buf) != nullptr) {
-        char buffer[35];
-        strftime(buffer, sizeof(buffer), "%H:%M:%S", &tm_buf);
-        card.time_text = buffer;
-        
-        strftime(buffer, sizeof(buffer), "%d/%m/%Y", &tm_buf);
-        card.date_text = buffer;
-        
-        const char* wdays[] = {"Chủ Nhật", "Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"};
-        card.day_text = wdays[tm_buf.tm_wday];
-    }
 
     // 2. THÔNG TIN HỆ THỐNG
     auto& board = Board::GetInstance();
     card.network_icon = board.GetNetworkStateIcon();
+    if (board.GetBoardType() == "wifi") {
+        auto& wifi_station = WifiStation::GetInstance();
+        card.rssi = wifi_station.GetRssi();
+    } else {
+        AtModem* cellular_modem = static_cast<AtModem*>(board.GetNetwork());
+        card.rssi = cellular_modem ? cellular_modem->GetCsq() : 0;
+    }
 
     int battery_level;
     bool charging, discharging;

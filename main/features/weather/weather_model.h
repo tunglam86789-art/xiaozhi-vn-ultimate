@@ -46,7 +46,7 @@ struct IdleCardInfo {
     // System Info
     int battery_level = 100;
     bool is_charging = false;
-    int wifi_rssi = 0;
+    int8_t rssi = 0;
     
     std::vector<ForecastItem> forecast;
 };

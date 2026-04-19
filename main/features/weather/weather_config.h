@@ -14,7 +14,7 @@
 #endif
 
 // Weather API endpoints
-#define WEATHER_API_ENDPOINT "https://api.openweathermap.org/data/2.5/weather"
+#define WEATHER_API_ENDPOINT "https://api.openweathermap.org/data/2.5/"
 #define IP_LOCATION_API_ENDPOINT "https://ipwho.is"
 #define CITY_LOCATION_DEFAULT "Hanoi"
 
