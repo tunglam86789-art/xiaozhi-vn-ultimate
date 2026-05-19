@@ -28,6 +28,7 @@ namespace {
 constexpr uint32_t kAudioRawFifoSize = 64 * 1024;
 constexpr uint32_t kAudioRenderFifoSize = 16 * 1024;
 constexpr uint32_t kVideoRawFifoSize = 512 * 1024;
+constexpr uint32_t kVideoRenderFifoSize = 64 * 1024;
 
 constexpr uint32_t kAacSampleRateTable[] = {
     96000, 88200, 64000, 48000, 44100, 32000,
@@ -205,7 +206,7 @@ bool Mp4Player::InitializeAvRender() {
     render_cfg.audio_raw_fifo_size = kAudioRawFifoSize;
     render_cfg.video_raw_fifo_size = kVideoRawFifoSize;
     render_cfg.audio_render_fifo_size = kAudioRenderFifoSize;
-    render_cfg.video_render_fifo_size = 0;
+    render_cfg.video_render_fifo_size = 0; // Use default in render implementation
     render_cfg.quit_when_eos = false;
     render_cfg.allow_drop_data = false;
     render_cfg.pause_render_only = true;

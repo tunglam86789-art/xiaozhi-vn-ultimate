@@ -441,15 +441,21 @@ void Application::Start() {
         if (sd_card->Initialize() == ESP_OK) {
             ESP_LOGI(TAG, "SD card mounted successfully");
             InitSdMusic();
-            // InitVideo();
-            InitMp4Video();
 
+#if (0) // Test video playback avi video from SD card
+            InitVideo();
+            PlayVideo("/sdcard/videos/video_15s.avi");
+            vTaskDelay(pdMS_TO_TICKS(16000)); // Play for 15 seconds
+#endif
+#if (1) // Test video playback mp4 video from SD card
+            InitMp4Video();
             if (PlayMp4Video("/sdcard/videos/video_15s.mp4")) {
-                ESP_LOGI(TAG, "Playing MP4 video");\
-                vTaskDelay(pdMS_TO_TICKS(16000)); // Play for 15 seconds
+                ESP_LOGI(TAG, "Playing MP4 video");
+                vTaskDelay(pdMS_TO_TICKS(20000)); // Play for 20 seconds
             } else {
                 ESP_LOGE(TAG, "Failed to play MP4 video");
             }
+#endif
         } else {
             ESP_LOGW(TAG, "Failed to mount SD card");
         }
