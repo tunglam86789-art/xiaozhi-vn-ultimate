@@ -24,6 +24,7 @@ extern "C" {
 
 class AudioCodec;
 class SdCard;
+class Display;
 
 #define MP4_PLAYER_STATIC_TASK_CREATION 1
 #define MP4_DEFAULT_DIRECTORY            "videos"
@@ -41,6 +42,11 @@ enum class Mp4PlayerState {
     Paused,
     Stopping,
     Error,
+};
+
+enum class Mp4RenderMode {
+    DirectLcd,
+    LvglCanvas,
 };
 
 struct Mp4FileInfo {
@@ -73,7 +79,9 @@ public:
     bool Initialize(esp_lcd_panel_handle_t lcd_panel,
                     uint16_t lcd_width, uint16_t lcd_height,
                     AudioCodec* codec,
-                    SdCard* sd_card);
+                    SdCard* sd_card,
+                    Display* display = nullptr,
+                    Mp4RenderMode mode = Mp4RenderMode::DirectLcd);
     void Deinitialize();
 
     bool Play(const std::string& file_path);
@@ -104,6 +112,9 @@ public:
 
     void SetVolume(float factor) { volume_factor_ = factor; }
     float GetVolume() const { return volume_factor_; }
+
+    void SetRenderMode(Mp4RenderMode mode);
+    Mp4RenderMode GetRenderMode() const { return render_mode_; }
 
 private:
     struct RendererInitCfg {
@@ -160,6 +171,9 @@ private:
     bool ProcessVideoFrame(const esp_extractor_frame_info_t& frame);
     bool PushEos();
     bool DrawFrameToLcd(const uint8_t* frame, uint16_t width, uint16_t height, av_render_video_frame_type_t frame_type);
+    bool DrawFrameToCanvas(const uint8_t* frame, uint16_t width, uint16_t height, av_render_video_frame_type_t frame_type);
+    void CreateVideoCanvas();
+    void DestroyVideoCanvas();
     bool EnsureDrawBuffer(size_t bytes);
     void OutputPcmToCodec(const int16_t* pcm, size_t samples, int channels);
     void SetState(Mp4PlayerState new_state);
@@ -192,6 +206,10 @@ private:
     esp_extractor_stream_info_t video_stream_info_{};
     av_render_audio_codec_t audio_codec_type_ = AV_RENDER_AUDIO_CODEC_NONE;
     av_render_video_codec_t video_codec_type_ = AV_RENDER_VIDEO_CODEC_NONE;
+    // Display size from container/extractor (e.g. 320x180). H264 decoder may output
+    // aligned coded size (e.g. 320x192), so render path crops to these expected values.
+    uint16_t expected_video_width_ = 0;
+    uint16_t expected_video_height_ = 0;
     FileContext file_ctx_{};
     std::string current_file_path_;
 
@@ -202,6 +220,11 @@ private:
 
     uint8_t* video_draw_buf_ = nullptr;
     size_t video_draw_buf_size_ = 0;
+
+    Display* display_ = nullptr;
+    void* video_canvas_ = nullptr;
+    uint16_t* canvas_buf_ = nullptr;
+    Mp4RenderMode render_mode_ = Mp4RenderMode::DirectLcd;
 
     mutable std::mutex stats_mutex_;
     Mp4PlaybackStats stats_{};

@@ -1701,7 +1701,9 @@ bool Application::InitMp4Video() {
             static_cast<uint16_t>(lcd->width()),
             static_cast<uint16_t>(lcd->height()),
             codec,
-            sd_card);
+            sd_card,
+            display,
+            Mp4RenderMode::LvglCanvas);
         if (ok) {
             size_t found = mp4_video_->ScanDirectory();
             ESP_LOGI(TAG, "InitMp4Video: found %zu MP4 files", found);

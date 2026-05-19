@@ -15,9 +15,11 @@ extern "C" {
 #include "esp_audio_dec_default.h"
 #include "esp_extractor_defaults.h"
 #include "esp_video_dec_default.h"
+#include "extractor_helper.h"
 }
 
 #include "audio_codec.h"
+#include "display.h"
 #include "sd_card.h"
 
 static const char* TAG = "Mp4Player";
@@ -91,7 +93,9 @@ Mp4Player::~Mp4Player() {
 bool Mp4Player::Initialize(esp_lcd_panel_handle_t lcd_panel,
                            uint16_t lcd_width, uint16_t lcd_height,
                            AudioCodec* codec,
-                           SdCard* sd_card) {
+                           SdCard* sd_card,
+                           Display* display,
+                           Mp4RenderMode mode) {
     if (initialized_.load()) {
         ESP_LOGW(TAG, "Already initialized");
         return true;
@@ -107,6 +111,8 @@ bool Mp4Player::Initialize(esp_lcd_panel_handle_t lcd_panel,
     audio_codec_ = codec;
     sd_card_ = sd_card;
     mount_point_ = sd_card_->GetMountPoint();
+    display_ = display;
+    render_mode_ = mode;
 
     esp_extractor_register_default();
     esp_audio_dec_register_default();
@@ -120,8 +126,9 @@ bool Mp4Player::Initialize(esp_lcd_panel_handle_t lcd_panel,
 
     initialized_.store(true);
     SetState(Mp4PlayerState::Idle);
-    ESP_LOGI(TAG, "Initialized av_render pipeline: LCD %ux%u mount=%s",
-             lcd_width_, lcd_height_, mount_point_.c_str());
+    ESP_LOGI(TAG, "Initialized av_render pipeline: LCD %ux%u mount=%s mode=%s",
+             lcd_width_, lcd_height_, mount_point_.c_str(),
+             render_mode_ == Mp4RenderMode::DirectLcd ? "DirectLcd" : "LvglCanvas");
     return true;
 }
 
@@ -129,6 +136,7 @@ void Mp4Player::Deinitialize() {
     Stop();
     CleanupPlaybackResources();
     DestroyAvRender();
+    DestroyVideoCanvas();
 
     if (video_draw_buf_) {
         heap_caps_free(video_draw_buf_);
@@ -198,7 +206,7 @@ bool Mp4Player::InitializeAvRender() {
     render_cfg.video_raw_fifo_size = kVideoRawFifoSize;
     render_cfg.audio_render_fifo_size = kAudioRenderFifoSize;
     render_cfg.video_render_fifo_size = 0;
-    render_cfg.quit_when_eos = true;
+    render_cfg.quit_when_eos = false;
     render_cfg.allow_drop_data = false;
     render_cfg.pause_render_only = true;
 
@@ -506,15 +514,15 @@ bool Mp4Player::PreparePlayback(const std::string& file_path) {
         return false;
     }
 
-    ESP_LOGI(TAG, "Audio format=0x%lx sample_rate=%lu channel=%u bits=%u duration=%lu",
-             (unsigned long)audio_stream_info_.audio_info.format,
+    ESP_LOGI(TAG, "Audio format=%s sample_rate=%lu channel=%u bits=%u duration=%lu",
+             esp_extractor_get_format_name(audio_stream_info_.audio_info.format),
              (unsigned long)audio_stream_info_.audio_info.sample_rate,
              (unsigned)audio_stream_info_.audio_info.channel,
              (unsigned)audio_stream_info_.audio_info.bits_per_sample,
              (unsigned long)audio_stream_info_.duration);
 
-    ESP_LOGI(TAG, "Video format=0x%lx resolution=%ux%u fps=%u duration=%lu",
-             (unsigned long)video_stream_info_.video_info.format,
+    ESP_LOGI(TAG, "Video format=%s resolution=%ux%u fps=%u duration=%lu",
+             esp_extractor_get_format_name(video_stream_info_.video_info.format),
              (unsigned)video_stream_info_.video_info.width,
              (unsigned)video_stream_info_.video_info.height,
              (unsigned)video_stream_info_.video_info.fps,
@@ -595,6 +603,11 @@ bool Mp4Player::ConfigureRenderStreams() {
         ESP_LOGE(TAG, "av_render_add_video_stream failed: %d", ret);
         return false;
     }
+
+    // Keep the container/display resolution from extractor. For H264 this can differ
+    // from decoder output size reported later (macroblock-aligned height, e.g. 180->192).
+    expected_video_width_ = video_stream_info_.video_info.width;
+    expected_video_height_ = video_stream_info_.video_info.height;
 
     {
         std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -728,8 +741,19 @@ bool Mp4Player::DrawFrameToLcd(const uint8_t* frame,
                                av_render_video_frame_type_t frame_type) {
     if (!lcd_panel_ || !frame || width == 0 || height == 0) return false;
 
-    const uint16_t draw_w = std::min(width, lcd_width_);
-    const uint16_t draw_h = std::min(height, lcd_height_);
+    // `width/height` here come from decoder output frame info (coded size), not always
+    // the visible display size. Clamp/crop to extractor resolution when available.
+    uint16_t frame_w = width;
+    uint16_t frame_h = height;
+    if (expected_video_width_ > 0 && expected_video_width_ <= width) {
+        frame_w = expected_video_width_;
+    }
+    if (expected_video_height_ > 0 && expected_video_height_ <= height) {
+        frame_h = expected_video_height_;
+    }
+
+    const uint16_t draw_w = std::min(frame_w, lcd_width_);
+    const uint16_t draw_h = std::min(frame_h, lcd_height_);
 
     const int x_offset = (lcd_width_ - draw_w) / 2;
     const int y_offset = (lcd_height_ - draw_h) / 2;
@@ -773,6 +797,111 @@ bool Mp4Player::DrawFrameToLcd(const uint8_t* frame,
     return true;
 }
 
+bool Mp4Player::DrawFrameToCanvas(const uint8_t* frame,
+                                  uint16_t width,
+                                  uint16_t height,
+                                  av_render_video_frame_type_t frame_type) {
+#if defined(HAVE_LVGL) && HAVE_LVGL
+    if (!display_ || !video_canvas_ || !canvas_buf_ || !frame || width == 0 || height == 0) {
+        return false;
+    }
+
+    // Same rule as LCD path: canvas draw uses decoder stride, but visible area follows
+    // extractor-provided display size to avoid showing padded H264 lines.
+    uint16_t frame_w = width;
+    uint16_t frame_h = height;
+    if (expected_video_width_ > 0 && expected_video_width_ <= width) {
+        frame_w = expected_video_width_;
+    }
+    if (expected_video_height_ > 0 && expected_video_height_ <= height) {
+        frame_h = expected_video_height_;
+    }
+
+    const uint16_t draw_w = std::min(frame_w, lcd_width_);
+    const uint16_t draw_h = std::min(frame_h, lcd_height_);
+    const int x_offset = (lcd_width_ - draw_w) / 2;
+    const int y_offset = (lcd_height_ - draw_h) / 2;
+
+    const size_t frame_bytes = static_cast<size_t>(lcd_width_) * lcd_height_ * sizeof(uint16_t);
+    memset(canvas_buf_, 0, frame_bytes);
+
+    const size_t src_stride = static_cast<size_t>(width) * sizeof(uint16_t);
+    const size_t row_bytes = static_cast<size_t>(draw_w) * sizeof(uint16_t);
+
+    for (uint16_t row = 0; row < draw_h; ++row) {
+        const uint8_t* src = frame + static_cast<size_t>(row) * src_stride;
+        uint8_t* dst = reinterpret_cast<uint8_t*>(
+            canvas_buf_ + static_cast<size_t>(y_offset + row) * lcd_width_ + x_offset);
+
+        memcpy(dst, src, row_bytes);
+
+        if (frame_type == AV_RENDER_VIDEO_RAW_TYPE_RGB565_BE) {
+            for (size_t i = 0; i < row_bytes; i += 2) {
+                std::swap(dst[i], dst[i + 1]);
+            }
+        }
+    }
+
+    {
+        DisplayLockGuard lock(display_);
+        lv_obj_invalidate(static_cast<lv_obj_t*>(video_canvas_));
+    }
+    return true;
+#else
+    (void)frame;
+    (void)width;
+    (void)height;
+    (void)frame_type;
+    return false;
+#endif
+}
+
+void Mp4Player::CreateVideoCanvas() {
+#if defined(HAVE_LVGL) && HAVE_LVGL
+    if (!display_) {
+        ESP_LOGW(TAG, "Cannot create MP4 canvas: no Display* provided");
+        return;
+    }
+
+    DestroyVideoCanvas();
+
+    const size_t buf_size = static_cast<size_t>(lcd_width_) * lcd_height_ * sizeof(uint16_t);
+    canvas_buf_ = static_cast<uint16_t*>(
+        heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!canvas_buf_) {
+        ESP_LOGE(TAG, "Failed to allocate MP4 canvas buffer (%u)", static_cast<unsigned>(buf_size));
+        return;
+    }
+    memset(canvas_buf_, 0, buf_size);
+
+    {
+        DisplayLockGuard lock(display_);
+        lv_obj_t* canvas = lv_canvas_create(lv_scr_act());
+        lv_canvas_set_buffer(canvas, canvas_buf_, lcd_width_, lcd_height_, LV_COLOR_FORMAT_RGB565);
+        lv_obj_set_pos(canvas, 0, 0);
+        lv_obj_set_size(canvas, lcd_width_, lcd_height_);
+        lv_canvas_fill_bg(canvas, lv_color_black(), LV_OPA_COVER);
+        lv_obj_move_foreground(canvas);
+        video_canvas_ = canvas;
+    }
+    ESP_LOGI(TAG, "MP4 canvas created: %ux%u", static_cast<unsigned>(lcd_width_), static_cast<unsigned>(lcd_height_));
+#endif
+}
+
+void Mp4Player::DestroyVideoCanvas() {
+#if defined(HAVE_LVGL) && HAVE_LVGL
+    if (video_canvas_ && display_) {
+        DisplayLockGuard lock(display_);
+        lv_obj_del(static_cast<lv_obj_t*>(video_canvas_));
+    }
+#endif
+    video_canvas_ = nullptr;
+    if (canvas_buf_) {
+        heap_caps_free(canvas_buf_);
+        canvas_buf_ = nullptr;
+    }
+}
+
 void Mp4Player::OutputPcmToCodec(const int16_t* pcm, size_t samples, int channels) {
     if (!audio_codec_ || !pcm || samples == 0) return;
 
@@ -811,9 +940,42 @@ void Mp4Player::OutputPcmToCodec(const int16_t* pcm, size_t samples, int channel
 void Mp4Player::SetState(Mp4PlayerState new_state) {
     Mp4PlayerState old_state = state_.exchange(new_state);
     if (old_state == new_state) return;
+
+    if (render_mode_ == Mp4RenderMode::LvglCanvas) {
+        if (new_state == Mp4PlayerState::Loading) {
+            CreateVideoCanvas();
+        }
+        if (new_state == Mp4PlayerState::Idle || new_state == Mp4PlayerState::Error) {
+            DestroyVideoCanvas();
+        }
+    }
+
     if (state_callback_) {
         state_callback_(old_state, new_state);
     }
+}
+
+void Mp4Player::SetRenderMode(Mp4RenderMode mode) {
+    if (mode == render_mode_) {
+        return;
+    }
+
+    Mp4RenderMode old = render_mode_;
+    render_mode_ = mode;
+
+    if (state_.load() == Mp4PlayerState::Loading ||
+        state_.load() == Mp4PlayerState::Playing ||
+        state_.load() == Mp4PlayerState::Paused) {
+        if (mode == Mp4RenderMode::LvglCanvas) {
+            CreateVideoCanvas();
+        } else {
+            DestroyVideoCanvas();
+        }
+    }
+
+    ESP_LOGI(TAG, "Render mode: %s -> %s",
+             old == Mp4RenderMode::DirectLcd ? "DirectLcd" : "LvglCanvas",
+             mode == Mp4RenderMode::DirectLcd ? "DirectLcd" : "LvglCanvas");
 }
 
 std::string Mp4Player::BuildFullPath(const std::string& filename) const {
@@ -1099,11 +1261,30 @@ int Mp4Player::VideoRenderSetFrameInfo(video_render_handle_t render, av_render_v
     }
 
     ctx->info = *info;
+
+    // av_render passes decoder frame size (often aligned). For stats/log we also expose
+    // the intended display size from extractor to make runtime diagnostics less confusing.
+    uint16_t out_w = info->width;
+    uint16_t out_h = info->height;
+    if (ctx->owner->expected_video_width_ > 0 && ctx->owner->expected_video_width_ <= info->width) {
+        out_w = ctx->owner->expected_video_width_;
+    }
+    if (ctx->owner->expected_video_height_ > 0 && ctx->owner->expected_video_height_ <= info->height) {
+        out_h = ctx->owner->expected_video_height_;
+    }
+
     {
         std::lock_guard<std::mutex> lock(ctx->owner->stats_mutex_);
-        ctx->owner->stats_.video_width = info->width;
-        ctx->owner->stats_.video_height = info->height;
+        ctx->owner->stats_.video_width = out_w;
+        ctx->owner->stats_.video_height = out_h;
         ctx->owner->stats_.video_fps = info->fps;
+        ESP_LOGI(TAG, "Video frame info decoded=%ux%u display=%ux%u fps=%u type=%d",
+                 static_cast<unsigned>(info->width),
+                 static_cast<unsigned>(info->height),
+                 static_cast<unsigned>(out_w),
+                 static_cast<unsigned>(out_h),
+                 static_cast<unsigned>(info->fps),
+                 static_cast<int>(info->type));
     }
     return 0;
 }
@@ -1126,10 +1307,26 @@ int Mp4Player::VideoRenderWrite(video_render_handle_t render, av_render_video_fr
                                     ctx->info.height);
     }
 
-    return ctx->owner->DrawFrameToLcd(video_data->data,
-                                      ctx->info.width,
-                                      ctx->info.height,
-                                      ctx->info.type)
+    bool drawn = false;
+    if (ctx->owner->render_mode_ == Mp4RenderMode::LvglCanvas) {
+        drawn = ctx->owner->DrawFrameToCanvas(video_data->data,
+                                              ctx->info.width,
+                                              ctx->info.height,
+                                              ctx->info.type);
+        if (!drawn) {
+            drawn = ctx->owner->DrawFrameToLcd(video_data->data,
+                                               ctx->info.width,
+                                               ctx->info.height,
+                                               ctx->info.type);
+        }
+    } else {
+        drawn = ctx->owner->DrawFrameToLcd(video_data->data,
+                                           ctx->info.width,
+                                           ctx->info.height,
+                                           ctx->info.type);
+    }
+
+    return drawn
                ? 0
                : -1;
 }
