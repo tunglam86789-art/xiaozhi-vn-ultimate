@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -14,13 +15,11 @@
 #include <esp_lcd_panel_ops.h>
 
 extern "C" {
-#include "esp_audio_simple_dec.h"
-#include "esp_audio_simple_dec_default.h"
+#include "audio_render.h"
+#include "av_render.h"
 #include "esp_extractor.h"
-#include "esp_h264_dec.h"
-#include "esp_h264_dec_sw.h"
-#include "esp_imgfx_color_convert.h"
-#include "esp_imgfx_types.h"
+#include "esp_extractor_types.h"
+#include "video_render.h"
 }
 
 class AudioCodec;
@@ -30,13 +29,9 @@ class SdCard;
 #define MP4_DEFAULT_DIRECTORY            "videos"
 #define MP4_MAX_FILES                    256
 #define MP4_EXTRACTOR_POOL_SIZE          (256 * 1024)
-#define MP4_AUDIO_BUF_SIZE               (16 * 1024)
 #define MP4_TASK_STACK_SIZE              (12 * 1024)
 #define MP4_TASK_PRIORITY                5
 #define MP4_TASK_CORE                    1
-#define MP4_RENDER_TASK_STACK            (10 * 1024)
-#define MP4_RENDER_TASK_PRIORITY         4
-#define MP4_RENDER_TASK_CORE             0
 #define MP4_BUFFER_LINES                 40
 
 enum class Mp4PlayerState {
@@ -111,9 +106,16 @@ public:
     float GetVolume() const { return volume_factor_; }
 
 private:
+    struct RendererInitCfg {
+        Mp4Player* owner = nullptr;
+    };
+
     struct FileContext {
         FILE* fp = nullptr;
     };
+
+    struct AudioRenderCtx;
+    struct VideoRenderCtx;
 
     Mp4Player();
     ~Mp4Player();
@@ -123,26 +125,48 @@ private:
     static void PlaybackTaskEntry(void* arg);
     void PlaybackTaskLoop();
 
-    static void RenderTaskEntry(void* arg);
-    void RenderTaskLoop();
-
     static int FileReadCb(void* buffer, uint32_t size, void* ctx);
     static int FileSeekCb(uint32_t position, void* ctx);
     static uint32_t FileSizeCb(void* ctx);
 
+    static int AvRenderEventCb(av_render_event_t event, void* ctx);
+
+    static audio_render_handle_t AudioRenderInit(void* cfg, int cfg_size);
+    static int AudioRenderOpen(audio_render_handle_t render, av_render_audio_frame_info_t* info);
+    static int AudioRenderWrite(audio_render_handle_t render, av_render_audio_frame_t* audio_data);
+    static int AudioRenderGetLatency(audio_render_handle_t render, uint32_t* latency);
+    static int AudioRenderGetFrameInfo(audio_render_handle_t render, av_render_audio_frame_info_t* info);
+    static int AudioRenderSetSpeed(audio_render_handle_t render, float speed);
+    static int AudioRenderClose(audio_render_handle_t render);
+    static void AudioRenderDeinit(audio_render_handle_t render);
+
+    static video_render_handle_t VideoRenderOpen(void* cfg, int size);
+    static bool VideoRenderFormatSupported(video_render_handle_t render, av_render_video_frame_type_t type);
+    static int VideoRenderSetFrameInfo(video_render_handle_t render, av_render_video_frame_info_t* info);
+    static int VideoRenderGetFrameBuffer(video_render_handle_t render, av_render_frame_buffer_t* frame_buffer);
+    static int VideoRenderWrite(video_render_handle_t render, av_render_video_frame_t* video_data);
+    static int VideoRenderGetLatency(video_render_handle_t render, uint32_t* latency);
+    static int VideoRenderGetFrameInfo(video_render_handle_t render, av_render_video_frame_info_t* info);
+    static int VideoRenderClear(video_render_handle_t render);
+    static int VideoRenderClose(video_render_handle_t render);
+
     bool PreparePlayback(const std::string& file_path);
+    bool ConfigureRenderStreams();
+    bool InitializeAvRender();
+    void DestroyAvRender();
     void CleanupPlaybackResources();
     void CloseFile();
-    void CloseDecoders();
-    bool InitAudioDecoder(uint32_t audio_format, uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample);
-    bool InitVideoDecoder(uint16_t width, uint16_t height, uint16_t fps);
     bool ProcessAudioFrame(const esp_extractor_frame_info_t& frame);
     bool ProcessVideoFrame(const esp_extractor_frame_info_t& frame);
-    bool DrawFrameToLcd(uint16_t width, uint16_t height);
+    bool PushEos();
+    bool DrawFrameToLcd(const uint8_t* frame, uint16_t width, uint16_t height, av_render_video_frame_type_t frame_type);
+    bool EnsureDrawBuffer(size_t bytes);
     void OutputPcmToCodec(const int16_t* pcm, size_t samples, int channels);
     void SetState(Mp4PlayerState new_state);
     std::string BuildFullPath(const std::string& filename) const;
     bool IsSupportedMp4Name(const std::string& name) const;
+    av_render_audio_codec_t MapAudioCodec(esp_extractor_format_t format) const;
+    av_render_video_codec_t MapVideoCodec(esp_extractor_format_t format) const;
 
     esp_lcd_panel_handle_t lcd_panel_ = nullptr;
     uint16_t lcd_width_ = 0;
@@ -155,46 +179,29 @@ private:
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> paused_{false};
     std::atomic<bool> playback_task_running_{false};
-    std::atomic<bool> render_task_running_{false};
-    std::atomic<bool> render_exit_{false};
 
     TaskHandle_t playback_task_handle_ = nullptr;
-    TaskHandle_t render_task_handle_ = nullptr;
 #if MP4_PLAYER_STATIC_TASK_CREATION == 1
     StackType_t* playback_task_stack_ = nullptr;
     StaticTask_t* playback_task_buffer_ = nullptr;
-    StackType_t* render_task_stack_ = nullptr;
-    StaticTask_t* render_task_buffer_ = nullptr;
 #endif
 
     esp_extractor_handle_t extractor_ = nullptr;
     esp_extractor_config_t extractor_cfg_{};
+    esp_extractor_stream_info_t audio_stream_info_{};
+    esp_extractor_stream_info_t video_stream_info_{};
+    av_render_audio_codec_t audio_codec_type_ = AV_RENDER_AUDIO_CODEC_NONE;
+    av_render_video_codec_t video_codec_type_ = AV_RENDER_VIDEO_CODEC_NONE;
     FileContext file_ctx_{};
     std::string current_file_path_;
 
-    /* ---- Synchronization for decode/render separation ---- */
-    SemaphoreHandle_t frame_ready_sem_ = nullptr;     ///< Signals new H264 frame ready
-    SemaphoreHandle_t h264_mutex_ = nullptr;           ///< Protects pending H264 buffer
+    RendererInitCfg renderer_init_cfg_{};
+    audio_render_handle_t audio_render_ = nullptr;
+    video_render_handle_t video_render_ = nullptr;
+    av_render_handle_t av_render_ = nullptr;
 
-    /* ---- Pending H264 frame (from playback task to render task) ---- */
-    uint8_t* pending_h264_buf_ = nullptr;              ///< Playback task writes H264 data
-    uint32_t pending_h264_size_ = 0;
-    uint16_t pending_frame_w_ = 0;
-    uint16_t pending_frame_h_ = 0;
-    uint8_t* decode_h264_buf_ = nullptr;               ///< Render task's private decode buffer
-
-    /* ---- Decoders (owned by render task) ---- */
-    esp_audio_simple_dec_handle_t audio_dec_ = nullptr;
-    esp_h264_dec_handle_t video_dec_ = nullptr;
-    esp_h264_dec_param_sw_handle_t video_param_ = nullptr;
-    esp_imgfx_color_convert_handle_t color_convert_ = nullptr;
-
-    uint8_t* audio_pcm_buf_ = nullptr;
-    size_t audio_pcm_buf_size_ = 0;
-    uint8_t* video_rgb565_buf_ = nullptr;
-    uint32_t video_rgb565_buf_size_ = 0;
-    uint16_t video_width_ = 0;
-    uint16_t video_height_ = 0;
+    uint8_t* video_draw_buf_ = nullptr;
+    size_t video_draw_buf_size_ = 0;
 
     mutable std::mutex stats_mutex_;
     Mp4PlaybackStats stats_{};

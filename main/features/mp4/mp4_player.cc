@@ -1,6 +1,7 @@
 #include "mp4_player.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -9,21 +10,55 @@
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
-#include <esp_timer.h>
 
 extern "C" {
+#include "esp_audio_dec_default.h"
 #include "esp_extractor_defaults.h"
-#include "extractor_helper.h"
+#include "esp_video_dec_default.h"
 }
 
 #include "audio_codec.h"
-#include "board.h"
 #include "sd_card.h"
 
 static const char* TAG = "Mp4Player";
 
 namespace {
-constexpr size_t kAudioPcmBufferSize = MP4_AUDIO_BUF_SIZE;
+constexpr uint32_t kAudioRawFifoSize = 64 * 1024;
+constexpr uint32_t kAudioRenderFifoSize = 16 * 1024;
+constexpr uint32_t kVideoRawFifoSize = 512 * 1024;
+
+constexpr uint32_t kAacSampleRateTable[] = {
+    96000, 88200, 64000, 48000, 44100, 32000,
+    24000, 22050, 16000, 12000, 11025, 8000,
+    7350,
+};
+
+bool ParseAacAsc(const uint8_t* data, size_t len, uint32_t& sample_rate, uint8_t& channels) {
+    if (!data || len < 2) {
+        return false;
+    }
+
+    uint8_t sf_idx = static_cast<uint8_t>(((data[0] & 0x07) << 1) | ((data[1] >> 7) & 0x01));
+    uint8_t ch_cfg = static_cast<uint8_t>((data[1] >> 3) & 0x0F);
+
+    if (sf_idx == 0x0F) {
+        if (len < 5) {
+            return false;
+        }
+        sample_rate = (static_cast<uint32_t>(data[1] & 0x7F) << 17) |
+                      (static_cast<uint32_t>(data[2]) << 9) |
+                      (static_cast<uint32_t>(data[3]) << 1) |
+                      ((data[4] >> 7) & 0x01);
+    } else if (sf_idx < (sizeof(kAacSampleRateTable) / sizeof(kAacSampleRateTable[0]))) {
+        sample_rate = kAacSampleRateTable[sf_idx];
+    }
+
+    if (ch_cfg > 0 && ch_cfg <= 7) {
+        channels = ch_cfg;
+    }
+
+    return (sample_rate > 0 && channels > 0);
+}
 
 inline int16_t ClampToInt16(float value) {
     if (value > 32767.0f) return 32767;
@@ -31,6 +66,16 @@ inline int16_t ClampToInt16(float value) {
     return static_cast<int16_t>(value);
 }
 }  // namespace
+
+struct Mp4Player::AudioRenderCtx {
+    Mp4Player* owner = nullptr;
+    av_render_audio_frame_info_t info{};
+};
+
+struct Mp4Player::VideoRenderCtx {
+    Mp4Player* owner = nullptr;
+    av_render_video_frame_info_t info{};
+};
 
 Mp4Player& Mp4Player::GetInstance() {
     static Mp4Player instance;
@@ -52,8 +97,7 @@ bool Mp4Player::Initialize(esp_lcd_panel_handle_t lcd_panel,
         return true;
     }
     if (!lcd_panel || !codec || !sd_card) {
-        ESP_LOGE(TAG, "Invalid init args: panel=%p codec=%p sd=%p",
-                 lcd_panel, codec, sd_card);
+        ESP_LOGE(TAG, "Invalid init args: panel=%p codec=%p sd=%p", lcd_panel, codec, sd_card);
         return false;
     }
 
@@ -64,167 +108,122 @@ bool Mp4Player::Initialize(esp_lcd_panel_handle_t lcd_panel,
     sd_card_ = sd_card;
     mount_point_ = sd_card_->GetMountPoint();
 
-    if (audio_pcm_buf_ == nullptr) {
-        audio_pcm_buf_ = static_cast<uint8_t*>(
-            heap_caps_malloc(kAudioPcmBufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        if (!audio_pcm_buf_) {
-            ESP_LOGE(TAG, "Failed to alloc audio buf (%zu)", kAudioPcmBufferSize);
-            Deinitialize();
-            return false;
-        }
-        audio_pcm_buf_size_ = kAudioPcmBufferSize;
-    }
-
-    // Allocate pending H264 frame buffer for playback→render handoff
-    if (pending_h264_buf_ == nullptr) {
-        pending_h264_buf_ = static_cast<uint8_t*>(
-            heap_caps_malloc(512 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        if (!pending_h264_buf_) {
-            ESP_LOGE(TAG, "Failed to alloc pending H264 buf");
-            Deinitialize();
-            return false;
-        }
-    }
-    if (decode_h264_buf_ == nullptr) {
-        decode_h264_buf_ = static_cast<uint8_t*>(
-            heap_caps_malloc(512 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        if (!decode_h264_buf_) {
-            ESP_LOGE(TAG, "Failed to alloc decode H264 buf");
-            Deinitialize();
-            return false;
-        }
-    }
-
-    // Create synchronization primitives for decode/render separation
-    frame_ready_sem_ = xSemaphoreCreateBinary();
-    h264_mutex_ = xSemaphoreCreateMutex();
-    if (!frame_ready_sem_ || !h264_mutex_) {
-        ESP_LOGE(TAG, "Failed to create sync primitives");
-        Deinitialize();
-        return false;
-    }
-
-    // Register all supported extractors (MP4, etc.)
     esp_extractor_register_default();
-
-    // Register all supported audio decoders (MP3, etc.)
     esp_audio_dec_register_default();
-    esp_audio_simple_dec_register_default();
+    esp_video_dec_register_default();
 
-    // Create independent render task
-    render_exit_.store(false);
-#if MP4_PLAYER_STATIC_TASK_CREATION == 1
-    if (render_task_stack_ == nullptr) {
-        render_task_stack_ = static_cast<StackType_t*>(
-            heap_caps_malloc(MP4_RENDER_TASK_STACK, MALLOC_CAP_SPIRAM));
-        if (!render_task_stack_) {
-            ESP_LOGE(TAG, "Failed to alloc render task stack");
-            Deinitialize();
-            return false;
-        }
-    }
-    if (render_task_buffer_ == nullptr) {
-        render_task_buffer_ = static_cast<StaticTask_t*>(
-            heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL));
-        if (!render_task_buffer_) {
-            ESP_LOGE(TAG, "Failed to alloc render task buffer");
-            Deinitialize();
-            return false;
-        }
-    }
-    render_task_handle_ = xTaskCreateStaticPinnedToCore(
-        RenderTaskEntry, "mp4_render",
-        MP4_RENDER_TASK_STACK, this,
-        MP4_RENDER_TASK_PRIORITY,
-        render_task_stack_, render_task_buffer_, MP4_RENDER_TASK_CORE);
-#else
-    BaseType_t ret = xTaskCreatePinnedToCore(
-        RenderTaskEntry, "mp4_render",
-        MP4_RENDER_TASK_STACK, this,
-        MP4_RENDER_TASK_PRIORITY,
-        &render_task_handle_, MP4_RENDER_TASK_CORE);
-    if (ret != pdPASS) {
-        render_task_handle_ = nullptr;
-    }
-#endif
-    if (!render_task_handle_) {
-        ESP_LOGE(TAG, "Failed to create render task");
+    renderer_init_cfg_.owner = this;
+    if (!InitializeAvRender()) {
         Deinitialize();
         return false;
     }
-    ESP_LOGI(TAG, "Render task created: core=%d prio=%d", MP4_RENDER_TASK_CORE, MP4_RENDER_TASK_PRIORITY);
 
     initialized_.store(true);
     SetState(Mp4PlayerState::Idle);
-    ESP_LOGI(TAG, "Initialized: LCD %ux%u, mount=%s", lcd_width_, lcd_height_, mount_point_.c_str());
+    ESP_LOGI(TAG, "Initialized av_render pipeline: LCD %ux%u mount=%s",
+             lcd_width_, lcd_height_, mount_point_.c_str());
     return true;
 }
 
 void Mp4Player::Deinitialize() {
     Stop();
+    CleanupPlaybackResources();
+    DestroyAvRender();
 
-    // Stop render task
-    if (render_task_handle_) {
-        render_exit_.store(true);
-        if (frame_ready_sem_) {
-            xSemaphoreGive(frame_ready_sem_);  // Wake render task so it can exit
-        }
-        // Wait for task to finish (max 2 seconds)
-        int timeout = 100;
-        while (render_task_running_.load() && --timeout > 0) {
-            vTaskDelay(pdMS_TO_TICKS(20));
-        }
-        if (timeout <= 0) {
-            ESP_LOGW(TAG, "Render task did not exit in time, force deleting");
-            vTaskDelete(render_task_handle_);
-        }
-        render_task_handle_ = nullptr;
+    if (video_draw_buf_) {
+        heap_caps_free(video_draw_buf_);
+        video_draw_buf_ = nullptr;
+        video_draw_buf_size_ = 0;
+    }
+
 #if MP4_PLAYER_STATIC_TASK_CREATION == 1
-        if (render_task_buffer_) {
-            heap_caps_free(render_task_buffer_);
-            render_task_buffer_ = nullptr;
-        }
-        if (render_task_stack_) {
-            heap_caps_free(render_task_stack_);
-            render_task_stack_ = nullptr;
-        }
+    if (playback_task_buffer_) {
+        heap_caps_free(playback_task_buffer_);
+        playback_task_buffer_ = nullptr;
+    }
+    if (playback_task_stack_) {
+        heap_caps_free(playback_task_stack_);
+        playback_task_stack_ = nullptr;
+    }
 #endif
-        render_exit_.store(false);
-    }
-
-    // Now safe to close decoders (render task is stopped)
-    CloseDecoders();
-
-    if (audio_pcm_buf_) {
-        heap_caps_free(audio_pcm_buf_);
-        audio_pcm_buf_ = nullptr;
-        audio_pcm_buf_size_ = 0;
-    }
-    if (video_rgb565_buf_) {
-        heap_caps_free(video_rgb565_buf_);
-        video_rgb565_buf_ = nullptr;
-        video_rgb565_buf_size_ = 0;
-    }
-    if (pending_h264_buf_) {
-        heap_caps_free(pending_h264_buf_);
-        pending_h264_buf_ = nullptr;
-    }
-    if (decode_h264_buf_) {
-        heap_caps_free(decode_h264_buf_);
-        decode_h264_buf_ = nullptr;
-    }
-    if (frame_ready_sem_) {
-        vSemaphoreDelete(frame_ready_sem_);
-        frame_ready_sem_ = nullptr;
-    }
-    if (h264_mutex_) {
-        vSemaphoreDelete(h264_mutex_);
-        h264_mutex_ = nullptr;
-    }
 
     initialized_.store(false);
     SetState(Mp4PlayerState::Idle);
     ESP_LOGI(TAG, "Deinitialized");
+}
+
+bool Mp4Player::InitializeAvRender() {
+    audio_render_cfg_t audio_cfg = {};
+    audio_cfg.ops.init = AudioRenderInit;
+    audio_cfg.ops.open = AudioRenderOpen;
+    audio_cfg.ops.write = AudioRenderWrite;
+    audio_cfg.ops.get_latency = AudioRenderGetLatency;
+    audio_cfg.ops.get_frame_info = AudioRenderGetFrameInfo;
+    audio_cfg.ops.set_speed = AudioRenderSetSpeed;
+    audio_cfg.ops.close = AudioRenderClose;
+    audio_cfg.ops.deinit = AudioRenderDeinit;
+    audio_cfg.cfg = &renderer_init_cfg_;
+    audio_cfg.cfg_size = sizeof(renderer_init_cfg_);
+
+    audio_render_ = audio_render_alloc_handle(&audio_cfg);
+    if (!audio_render_) {
+        ESP_LOGE(TAG, "Failed to alloc audio renderer");
+        return false;
+    }
+
+    video_render_cfg_t video_cfg = {};
+    video_cfg.ops.open = VideoRenderOpen;
+    video_cfg.ops.format_support = VideoRenderFormatSupported;
+    video_cfg.ops.set_frame_info = VideoRenderSetFrameInfo;
+    video_cfg.ops.get_frame_buffer = VideoRenderGetFrameBuffer;
+    video_cfg.ops.write = VideoRenderWrite;
+    video_cfg.ops.get_latency = VideoRenderGetLatency;
+    video_cfg.ops.get_frame_info = VideoRenderGetFrameInfo;
+    video_cfg.ops.clear = VideoRenderClear;
+    video_cfg.ops.close = VideoRenderClose;
+    video_cfg.cfg = &renderer_init_cfg_;
+    video_cfg.cfg_size = sizeof(renderer_init_cfg_);
+
+    video_render_ = video_render_alloc_handle(&video_cfg);
+    if (!video_render_) {
+        ESP_LOGE(TAG, "Failed to alloc video renderer");
+        return false;
+    }
+
+    av_render_cfg_t render_cfg = {};
+    render_cfg.audio_render = audio_render_;
+    render_cfg.video_render = video_render_;
+    render_cfg.sync_mode = AV_RENDER_SYNC_FOLLOW_AUDIO;
+    render_cfg.audio_raw_fifo_size = kAudioRawFifoSize;
+    render_cfg.video_raw_fifo_size = kVideoRawFifoSize;
+    render_cfg.audio_render_fifo_size = kAudioRenderFifoSize;
+    render_cfg.video_render_fifo_size = 0;
+    render_cfg.quit_when_eos = true;
+    render_cfg.allow_drop_data = false;
+    render_cfg.pause_render_only = true;
+
+    av_render_ = av_render_open(&render_cfg);
+    if (!av_render_) {
+        ESP_LOGE(TAG, "Failed to open av_render");
+        return false;
+    }
+    av_render_set_event_cb(av_render_, AvRenderEventCb, this);
+    return true;
+}
+
+void Mp4Player::DestroyAvRender() {
+    if (av_render_) {
+        av_render_close(av_render_);
+        av_render_ = nullptr;
+    }
+    if (video_render_) {
+        video_render_free_handle(video_render_);
+        video_render_ = nullptr;
+    }
+    if (audio_render_) {
+        audio_render_free_handle(audio_render_);
+        audio_render_ = nullptr;
+    }
 }
 
 bool Mp4Player::Play(const std::string& file_path) {
@@ -253,6 +252,7 @@ bool Mp4Player::Play(const std::string& file_path) {
         return false;
     }
 
+    playback_task_running_.store(true);
 #if MP4_PLAYER_STATIC_TASK_CREATION == 1
     if (playback_task_stack_ == nullptr) {
         playback_task_stack_ = static_cast<StackType_t*>(
@@ -277,14 +277,15 @@ bool Mp4Player::Play(const std::string& file_path) {
         playback_task_handle_ = nullptr;
     }
 #endif
+
     if (!playback_task_handle_) {
+        playback_task_running_.store(false);
         ESP_LOGE(TAG, "Failed to create playback task");
         CleanupPlaybackResources();
         SetState(Mp4PlayerState::Error);
         return false;
     }
 
-    playback_task_running_.store(true);
     SetState(Mp4PlayerState::Playing);
     ESP_LOGI(TAG, "Playing: %s", file_path.c_str());
     return true;
@@ -307,7 +308,12 @@ void Mp4Player::Stop() {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 
+    if (av_render_) {
+        av_render_pause(av_render_, false);
+        av_render_reset(av_render_);
+    }
     CleanupPlaybackResources();
+
     stop_requested_.store(false);
     paused_.store(false);
     playback_task_running_.store(false);
@@ -319,12 +325,18 @@ void Mp4Player::Stop() {
 void Mp4Player::Pause() {
     if (state_.load() != Mp4PlayerState::Playing) return;
     paused_.store(true);
+    if (av_render_) {
+        av_render_pause(av_render_, true);
+    }
     SetState(Mp4PlayerState::Paused);
 }
 
 void Mp4Player::Resume() {
     if (state_.load() != Mp4PlayerState::Paused) return;
     paused_.store(false);
+    if (av_render_) {
+        av_render_pause(av_render_, false);
+    }
     SetState(Mp4PlayerState::Playing);
 }
 
@@ -391,18 +403,9 @@ Mp4PlaybackStats Mp4Player::GetStats() const {
     return stats_;
 }
 
-// ---------------------------------------------------------------------------
-// File I/O callbacks for esp_extractor
-// ---------------------------------------------------------------------------
-
 void Mp4Player::PlaybackTaskEntry(void* arg) {
     auto* self = static_cast<Mp4Player*>(arg);
     if (self) self->PlaybackTaskLoop();
-}
-
-void Mp4Player::RenderTaskEntry(void* arg) {
-    auto* self = static_cast<Mp4Player*>(arg);
-    if (self) self->RenderTaskLoop();
 }
 
 int Mp4Player::FileReadCb(void* buffer, uint32_t size, void* ctx) {
@@ -428,18 +431,13 @@ uint32_t Mp4Player::FileSizeCb(void* ctx) {
     return end < 0 ? 0 : static_cast<uint32_t>(end);
 }
 
-// ---------------------------------------------------------------------------
-// Prepare / cleanup
-// ---------------------------------------------------------------------------
-
 bool Mp4Player::PreparePlayback(const std::string& file_path) {
     if (file_path.empty()) {
         ESP_LOGE(TAG, "Empty file path");
         return false;
     }
 
-    CloseDecoders();
-    CloseFile();
+    CleanupPlaybackResources();
 
     file_ctx_.fp = fopen(file_path.c_str(), "rb");
     if (!file_ctx_.fp) {
@@ -447,7 +445,6 @@ bool Mp4Player::PreparePlayback(const std::string& file_path) {
         return false;
     }
 
-    // Fill extractor config manually (not using helper to avoid extra dependency)
     memset(&extractor_cfg_, 0, sizeof(extractor_cfg_));
     extractor_cfg_.type = ESP_EXTRACTOR_TYPE_MP4;
     extractor_cfg_.extract_mask = ESP_EXTRACT_MASK_AV;
@@ -470,8 +467,8 @@ bool Mp4Player::PreparePlayback(const std::string& file_path) {
         return false;
     }
 
-    // Query streams
-    uint16_t audio_num = 0, video_num = 0;
+    uint16_t audio_num = 0;
+    uint16_t video_num = 0;
     err = esp_extractor_get_stream_num(extractor_, ESP_EXTRACTOR_STREAM_TYPE_AUDIO, &audio_num);
     if (err != ESP_EXTRACTOR_ERR_OK || audio_num == 0) {
         ESP_LOGE(TAG, "No audio stream in %s", file_path.c_str());
@@ -483,67 +480,139 @@ bool Mp4Player::PreparePlayback(const std::string& file_path) {
         return false;
     }
 
-    esp_extractor_stream_info_t audio_info = {};
-    esp_extractor_stream_info_t video_info = {};
-    err = esp_extractor_get_stream_info(extractor_, ESP_EXTRACTOR_STREAM_TYPE_AUDIO, 0, &audio_info);
+    memset(&audio_stream_info_, 0, sizeof(audio_stream_info_));
+    memset(&video_stream_info_, 0, sizeof(video_stream_info_));
+
+    err = esp_extractor_get_stream_info(extractor_, ESP_EXTRACTOR_STREAM_TYPE_AUDIO, 0, &audio_stream_info_);
     if (err != ESP_EXTRACTOR_ERR_OK) {
         ESP_LOGE(TAG, "Failed to get audio info: %d", err);
         return false;
     }
-    esp_extractor_audio_stream_info_t *audio_stream_info = &audio_info.audio_info;
-    ESP_LOGI(TAG, "Audio format:%s sample_rate:%d channel:%d bits:%d duration:%d",
-                esp_extractor_get_format_name(audio_stream_info->format),
-                (int)audio_stream_info->sample_rate, (int)audio_stream_info->channel, (int)audio_stream_info->bits_per_sample,
-                (int)audio_info.duration);
 
-    err = esp_extractor_get_stream_info(extractor_, ESP_EXTRACTOR_STREAM_TYPE_VIDEO, 0, &video_info);
+    err = esp_extractor_get_stream_info(extractor_, ESP_EXTRACTOR_STREAM_TYPE_VIDEO, 0, &video_stream_info_);
     if (err != ESP_EXTRACTOR_ERR_OK) {
         ESP_LOGE(TAG, "Failed to get video info: %d", err);
         return false;
     }
-    esp_extractor_video_stream_info_t *video_stream_info = &video_info.video_info;
-    ESP_LOGI(TAG, "Video format:%s resolution:%dx%d fps:%d dur:%d",
-                esp_extractor_get_format_name(video_stream_info->format),
-                video_stream_info->width, video_stream_info->height, video_stream_info->fps,
-                (int)video_info.duration);
 
-    // Validate audio format: MP3, AAC, or FLAC
-    if (audio_info.audio_info.format != ESP_EXTRACTOR_AUDIO_FORMAT_MP3 &&
-        audio_info.audio_info.format != ESP_EXTRACTOR_AUDIO_FORMAT_AAC &&
-        audio_info.audio_info.format != ESP_EXTRACTOR_AUDIO_FORMAT_FLAC) {
-        ESP_LOGE(TAG, "Unsupported audio fmt: 0x%lx (only MP3/AAC/FLAC)", (unsigned long)audio_info.audio_info.format);
+    audio_codec_type_ = MapAudioCodec(audio_stream_info_.audio_info.format);
+    video_codec_type_ = MapVideoCodec(video_stream_info_.video_info.format);
+    if (audio_codec_type_ == AV_RENDER_AUDIO_CODEC_NONE) {
+        ESP_LOGE(TAG, "Unsupported audio fmt: 0x%lx", (unsigned long)audio_stream_info_.audio_info.format);
+        return false;
+    }
+    if (video_codec_type_ == AV_RENDER_VIDEO_CODEC_NONE) {
+        ESP_LOGE(TAG, "Unsupported video fmt: 0x%lx", (unsigned long)video_stream_info_.video_info.format);
         return false;
     }
 
-    if (video_info.video_info.format != ESP_EXTRACTOR_VIDEO_FORMAT_H264) {
-        ESP_LOGE(TAG, "Unsupported video fmt: 0x%lx", (unsigned long)video_info.video_info.format);
+    ESP_LOGI(TAG, "Audio format=0x%lx sample_rate=%lu channel=%u bits=%u duration=%lu",
+             (unsigned long)audio_stream_info_.audio_info.format,
+             (unsigned long)audio_stream_info_.audio_info.sample_rate,
+             (unsigned)audio_stream_info_.audio_info.channel,
+             (unsigned)audio_stream_info_.audio_info.bits_per_sample,
+             (unsigned long)audio_stream_info_.duration);
+
+    ESP_LOGI(TAG, "Video format=0x%lx resolution=%ux%u fps=%u duration=%lu",
+             (unsigned long)video_stream_info_.video_info.format,
+             (unsigned)video_stream_info_.video_info.width,
+             (unsigned)video_stream_info_.video_info.height,
+             (unsigned)video_stream_info_.video_info.fps,
+             (unsigned long)video_stream_info_.duration);
+
+    return ConfigureRenderStreams();
+}
+
+bool Mp4Player::ConfigureRenderStreams() {
+    if (!av_render_) {
+        ESP_LOGE(TAG, "av_render not initialized");
         return false;
     }
 
-    if (!InitAudioDecoder(audio_stream_info->format,
-                          audio_stream_info->sample_rate,
-                          audio_stream_info->channel,
-                          audio_stream_info->bits_per_sample)) {
+    if (av_render_reset(av_render_) != 0) {
+        ESP_LOGW(TAG, "av_render_reset failed, continue with stream setup");
+    }
+
+    av_render_audio_info_t audio_info = {};
+    audio_info.codec = audio_codec_type_;
+    audio_info.channel = audio_stream_info_.audio_info.channel;
+    audio_info.bits_per_sample = audio_stream_info_.audio_info.bits_per_sample;
+    audio_info.sample_rate = audio_stream_info_.audio_info.sample_rate;
+    audio_info.codec_spec_info = audio_stream_info_.spec_info;
+    audio_info.spec_info_len = static_cast<int>(audio_stream_info_.spec_info_len);
+
+    if (audio_info.bits_per_sample == 0) {
+        audio_info.bits_per_sample = 16;
+    }
+
+    if (audio_codec_type_ == AV_RENDER_AUDIO_CODEC_AAC) {
+        uint32_t asc_rate = audio_info.sample_rate;
+        uint8_t asc_channels = audio_info.channel;
+        if (ParseAacAsc(audio_stream_info_.spec_info,
+                        audio_stream_info_.spec_info_len,
+                        asc_rate,
+                        asc_channels)) {
+            audio_info.sample_rate = asc_rate;
+            audio_info.channel = asc_channels;
+        }
+        if (audio_info.sample_rate == 0) {
+            audio_info.sample_rate = 44100;
+        }
+        if (audio_info.channel == 0) {
+            audio_info.channel = 2;
+        }
+
+        // MP4 usually carries raw AAC frames (no ADTS) with AudioSpecificConfig.
+        audio_info.aac_no_adts = (audio_info.spec_info_len > 0) ? 1 : 0;
+    }
+
+    if (audio_codec_type_ == AV_RENDER_AUDIO_CODEC_AAC) {
+        ESP_LOGI(TAG,
+                 "AAC cfg: sr=%lu ch=%u bits=%u spec_len=%d no_adts=%u",
+                 (unsigned long)audio_info.sample_rate,
+                 static_cast<unsigned>(audio_info.channel),
+                 static_cast<unsigned>(audio_info.bits_per_sample),
+                 audio_info.spec_info_len,
+                 static_cast<unsigned>(audio_info.aac_no_adts));
+    }
+
+    int ret = av_render_add_audio_stream(av_render_, &audio_info);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "av_render_add_audio_stream failed: %d", ret);
         return false;
     }
-    if (!InitVideoDecoder(video_stream_info->width,
-                          video_stream_info->height,
-                          video_stream_info->fps)) {
+
+    av_render_video_info_t video_info = {};
+    video_info.codec = video_codec_type_;
+    video_info.width = video_stream_info_.video_info.width;
+    video_info.height = video_stream_info_.video_info.height;
+    video_info.fps = static_cast<uint8_t>(video_stream_info_.video_info.fps);
+    video_info.codec_spec_info = video_stream_info_.spec_info;
+    video_info.spec_info_len = static_cast<int>(video_stream_info_.spec_info_len);
+
+    ret = av_render_add_video_stream(av_render_, &video_info);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "av_render_add_video_stream failed: %d", ret);
         return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.audio_rate = audio_stream_info_.audio_info.sample_rate;
+        stats_.audio_channels = audio_stream_info_.audio_info.channel;
+        stats_.audio_bits = audio_stream_info_.audio_info.bits_per_sample;
+        stats_.video_width = video_stream_info_.video_info.width;
+        stats_.video_height = video_stream_info_.video_info.height;
+        stats_.video_fps = video_stream_info_.video_info.fps;
     }
 
     return true;
 }
 
 void Mp4Player::CleanupPlaybackResources() {
-    // Don't close decoders here - render task may still be using them
-    // Decoders are closed in Deinitialize() after render task stops
     if (extractor_) {
         esp_extractor_close(extractor_);
         extractor_ = nullptr;
-    }
-    if (audio_codec_) {
-        audio_codec_->SetOutputSampleRate(-1);
     }
     CloseFile();
 }
@@ -555,344 +624,153 @@ void Mp4Player::CloseFile() {
     }
 }
 
-void Mp4Player::CloseDecoders() {
-    if (audio_dec_) {
-        esp_audio_simple_dec_close(audio_dec_);
-        audio_dec_ = nullptr;
-    }
-    if (video_dec_) {
-        esp_h264_dec_close(video_dec_);
-        esp_h264_dec_del(video_dec_);
-        video_dec_ = nullptr;
-    }
-    video_param_ = nullptr;
-    if (color_convert_) {
-        esp_imgfx_color_convert_close(color_convert_);
-        color_convert_ = nullptr;
-    }
-    if (video_rgb565_buf_) {
-        heap_caps_free(video_rgb565_buf_);
-        video_rgb565_buf_ = nullptr;
-        video_rgb565_buf_size_ = 0;
-    }
-    video_width_ = 0;
-    video_height_ = 0;
-}
-
-// ---------------------------------------------------------------------------
-// Decoder init
-// ---------------------------------------------------------------------------
-
-bool Mp4Player::InitAudioDecoder(uint32_t audio_format, uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample) {
-    if (audio_dec_) {
-        esp_audio_simple_dec_close(audio_dec_);
-        audio_dec_ = nullptr;
-    }
-
-    esp_audio_simple_dec_cfg_t cfg = {};
-    // Map extractor audio format to simple decoder type
-    switch (audio_format) {
-        case ESP_EXTRACTOR_AUDIO_FORMAT_AAC:
-            cfg.dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_AAC;
-            ESP_LOGI(TAG, "Audio decoder: AAC");
-            break;
-        case ESP_EXTRACTOR_AUDIO_FORMAT_FLAC:
-            cfg.dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_FLAC;
-            ESP_LOGI(TAG, "Audio decoder: FLAC");
-            break;
-        case ESP_EXTRACTOR_AUDIO_FORMAT_MP3:
-        default:
-            cfg.dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3;
-            ESP_LOGI(TAG, "Audio decoder: MP3");
-            break;
-    }
-    cfg.dec_cfg = nullptr;
-    cfg.cfg_size = 0;
-    cfg.use_frame_dec = true;  // extractor provides complete frames
-
-    esp_audio_err_t err = esp_audio_simple_dec_open(&cfg, &audio_dec_);
-    if (err != ESP_AUDIO_ERR_OK || !audio_dec_) {
-        ESP_LOGE(TAG, "esp_audio_simple_dec_open failed: %d", err);
-        audio_dec_ = nullptr;
-        return false;
-    }
-
-    if (audio_codec_) {
-        audio_codec_->EnableOutput(true);
-        audio_codec_->SetOutputSampleRate(static_cast<int>(sample_rate));
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        stats_.audio_rate = sample_rate;
-        stats_.audio_channels = channels;
-        stats_.audio_bits = bits_per_sample;
-    }
-    return true;
-}
-
-bool Mp4Player::InitVideoDecoder(uint16_t width, uint16_t height, uint16_t fps) {
-    // Close previous
-    if (video_dec_) {
-        esp_h264_dec_close(video_dec_);
-        esp_h264_dec_del(video_dec_);
-        video_dec_ = nullptr;
-    }
-    if (color_convert_) {
-        esp_imgfx_color_convert_close(color_convert_);
-        color_convert_ = nullptr;
-    }
-    if (video_rgb565_buf_) {
-        heap_caps_free(video_rgb565_buf_);
-        video_rgb565_buf_ = nullptr;
-        video_rgb565_buf_size_ = 0;
-    }
-
-    // Create H264 SW decoder
-    esp_h264_dec_cfg_sw_t cfg = {};
-    cfg.pic_type = ESP_H264_RAW_FMT_I420;
-    esp_h264_err_t h_err = esp_h264_dec_sw_new(&cfg, &video_dec_);
-    if (h_err != ESP_H264_ERR_OK || !video_dec_) {
-        ESP_LOGE(TAG, "esp_h264_dec_sw_new failed: %d", h_err);
-        video_dec_ = nullptr;
-        return false;
-    }
-
-    h_err = esp_h264_dec_open(video_dec_);
-    if (h_err != ESP_H264_ERR_OK) {
-        ESP_LOGE(TAG, "esp_h264_dec_open failed: %d", h_err);
-        return false;
-    }
-
-    h_err = esp_h264_dec_sw_get_param_hd(video_dec_, &video_param_);
-    if (h_err != ESP_H264_ERR_OK || !video_param_) {
-        ESP_LOGE(TAG, "get_param_hd failed: %d", h_err);
-        video_param_ = nullptr;
-        return false;
-    }
-
-    // Use resolution from container metadata
-    video_width_ = width;
-    video_height_ = height;
-
-    if (video_width_ == 0 || video_height_ == 0) {
-        ESP_LOGE(TAG, "Invalid video resolution %ux%u", video_width_, video_height_);
-        return false;
-    }
-    if (video_width_ > lcd_width_ || video_height_ > lcd_height_) {
-        ESP_LOGW(TAG, "Video %ux%u exceeds LCD %ux%u, will crop to fit",
-                 video_width_, video_height_, lcd_width_, lcd_height_);
-    }
-
-    // Allocate RGB565 output buffer
-    esp_imgfx_resolution_t res = {
-        .width = static_cast<int16_t>(video_width_),
-        .height = static_cast<int16_t>(video_height_),
-    };
-    uint32_t out_size = 0;
-    esp_imgfx_err_t img_err = esp_imgfx_get_image_size(ESP_IMGFX_PIXEL_FMT_RGB565_BE, &res, &out_size);
-    if (img_err != ESP_IMGFX_ERR_OK || out_size == 0) {
-        ESP_LOGE(TAG, "esp_imgfx_get_image_size failed: %d", img_err);
-        return false;
-    }
-
-    video_rgb565_buf_ = static_cast<uint8_t*>(
-        heap_caps_malloc(out_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!video_rgb565_buf_) {
-        ESP_LOGE(TAG, "Failed to alloc video buf (%lu)", (unsigned long)out_size);
-        return false;
-    }
-    video_rgb565_buf_size_ = out_size;
-
-    // Color converter: I420 -> RGB565_BE
-    esp_imgfx_color_convert_cfg_t cc_cfg = {
-        .in_res = res,
-        .in_pixel_fmt = ESP_IMGFX_PIXEL_FMT_I420,
-        .out_pixel_fmt = ESP_IMGFX_PIXEL_FMT_RGB565_BE,
-        .color_space_std = ESP_IMGFX_COLOR_SPACE_STD_BT601,
-    };
-    img_err = esp_imgfx_color_convert_open(&cc_cfg, &color_convert_);
-    if (img_err != ESP_IMGFX_ERR_OK || !color_convert_) {
-        ESP_LOGE(TAG, "color_convert_open failed: %d", img_err);
-        color_convert_ = nullptr;
-        return false;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        stats_.video_width = video_width_;
-        stats_.video_height = video_height_;
-        stats_.video_fps = fps;
-    }
-    ESP_LOGI(TAG, "Video decoder ready: %ux%u fps=%u", video_width_, video_height_, fps);
-    return true;
-}
-
-// ---------------------------------------------------------------------------
-// Frame processing
-// ---------------------------------------------------------------------------
-
 bool Mp4Player::ProcessAudioFrame(const esp_extractor_frame_info_t& frame) {
-    if (!audio_dec_ || frame.frame_size == 0 || frame.frame_buffer == nullptr) {
+    if (!av_render_ || frame.frame_buffer == nullptr || frame.frame_size == 0) {
         return false;
     }
 
-    esp_audio_simple_dec_raw_t raw = {};
-    raw.buffer = frame.frame_buffer;
-    raw.len = frame.frame_size;
-    raw.eos = EXTRACTOR_IS_EOS(frame.frame_flag);
-    raw.consumed = 0;
-    raw.frame_recover = ESP_AUDIO_SIMPLE_DEC_RECOVERY_NONE;
+    av_render_audio_data_t audio_data = {};
+    audio_data.data = frame.frame_buffer;
+    audio_data.size = frame.frame_size;
+    audio_data.pts = frame.pts;
+    audio_data.eos = EXTRACTOR_IS_EOS(frame.frame_flag);
 
-    esp_audio_simple_dec_out_t out = {};
-    out.buffer = audio_pcm_buf_;
-    out.len = static_cast<uint32_t>(audio_pcm_buf_size_);
-    out.needed_size = 0;
-    out.decoded_size = 0;
-
-    // Process all data in the frame (may contain multiple encoded frames)
-    while (raw.len > 0) {
-        out.decoded_size = 0;
-        out.needed_size = 0;
-        out.buffer = audio_pcm_buf_;
-        out.len = static_cast<uint32_t>(audio_pcm_buf_size_);
-
-        esp_audio_err_t err = esp_audio_simple_dec_process(audio_dec_, &raw, &out);
-        if (err == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH && out.needed_size > audio_pcm_buf_size_) {
-            // Grow buffer
-            heap_caps_free(audio_pcm_buf_);
-            audio_pcm_buf_ = static_cast<uint8_t*>(
-                heap_caps_malloc(out.needed_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-            audio_pcm_buf_size_ = audio_pcm_buf_ ? out.needed_size : 0;
-            if (!audio_pcm_buf_) {
-                ESP_LOGE(TAG, "Failed to grow audio buf");
-                return false;
-            }
-            continue;  // retry with bigger buffer
+    int retry = 0;
+    while (!stop_requested_.load()) {
+        int ret = av_render_add_audio_data(av_render_, &audio_data);
+        if (ret == 0) {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.audio_frames++;
+            return true;
         }
-        if (err != ESP_AUDIO_ERR_OK) {
-            ESP_LOGW(TAG, "audio dec process err: %d", err);
-            return false;
+        if (++retry >= 40) {
+            ESP_LOGW(TAG, "Drop audio frame, add_audio_data ret=%d", ret);
+            break;
         }
-
-        // Advance input past consumed bytes
-        raw.buffer += raw.consumed;
-        raw.len -= raw.consumed;
-
-        if (out.decoded_size > 0 && out.buffer) {
-            // Get decode info for sample rate updates
-            esp_audio_simple_dec_info_t info = {};
-            if (esp_audio_simple_dec_get_info(audio_dec_, &info) == ESP_AUDIO_ERR_OK) {
-                size_t total_samples = out.decoded_size / sizeof(int16_t);
-                auto* pcm = reinterpret_cast<int16_t*>(out.buffer);
-                if (audio_callback_) {
-                    audio_callback_(pcm, total_samples, info.channel);
-                }
-                OutputPcmToCodec(pcm, total_samples, info.channel);
-            }
-        }
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
-
-    {
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        stats_.audio_frames++;
-    }
-    return true;
+    return false;
 }
 
 bool Mp4Player::ProcessVideoFrame(const esp_extractor_frame_info_t& frame) {
-    // Playback task: just queue H264 frame for render task
-    if (frame.frame_size == 0 || frame.frame_buffer == nullptr) {
+    if (!av_render_ || frame.frame_buffer == nullptr || frame.frame_size == 0) {
         return false;
     }
 
-    // Copy H264 frame to pending buffer (mutex protected)
-    xSemaphoreTake(h264_mutex_, portMAX_DELAY);
-    if (frame.frame_size <= 512 * 1024) {
-        memcpy(pending_h264_buf_, frame.frame_buffer, frame.frame_size);
-        pending_h264_size_ = frame.frame_size;
-        pending_frame_w_ = video_width_;
-        pending_frame_h_ = video_height_;
-    } else {
-        ESP_LOGW(TAG, "H264 frame too large: %lu", (unsigned long)frame.frame_size);
-        pending_h264_size_ = 0;
-    }
-    xSemaphoreGive(h264_mutex_);
+    av_render_video_data_t video_data = {};
+    video_data.data = frame.frame_buffer;
+    video_data.size = frame.frame_size;
+    video_data.pts = frame.pts;
+    video_data.eos = EXTRACTOR_IS_EOS(frame.frame_flag);
+    video_data.key_frame = true;
 
-    // Signal render task that frame is ready
-    xSemaphoreGive(frame_ready_sem_);
-
-    {
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        stats_.video_frames++;
+    int retry = 0;
+    while (!stop_requested_.load()) {
+        int ret = av_render_add_video_data(av_render_, &video_data);
+        if (ret == 0) {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.video_frames++;
+            return true;
+        }
+        if (++retry >= 40) {
+            ESP_LOGW(TAG, "Drop video frame, add_video_data ret=%d", ret);
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
+    return false;
+}
+
+bool Mp4Player::PushEos() {
+    if (!av_render_) return false;
+
+    av_render_audio_data_t audio_eos = {};
+    audio_eos.eos = true;
+
+    av_render_video_data_t video_eos = {};
+    video_eos.eos = true;
+
+    /* Retry briefly; av_render queues may be full if decode already finished. */
+    int a_ret = -1, v_ret = -1;
+    for (int i = 0; i < 200 && !stop_requested_.load(); ++i) {
+        if (a_ret != 0) a_ret = av_render_add_audio_data(av_render_, &audio_eos);
+        if (v_ret != 0) v_ret = av_render_add_video_data(av_render_, &video_eos);
+        if (a_ret == 0 && v_ret == 0) break;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    ESP_LOGI(TAG, "PushEos: audio=%d video=%d", a_ret, v_ret);
+    return (a_ret == 0 && v_ret == 0);
+}
+
+bool Mp4Player::EnsureDrawBuffer(size_t bytes) {
+    if (bytes == 0) return false;
+    if (video_draw_buf_ && video_draw_buf_size_ >= bytes) {
+        return true;
+    }
+    if (video_draw_buf_) {
+        heap_caps_free(video_draw_buf_);
+        video_draw_buf_ = nullptr;
+        video_draw_buf_size_ = 0;
+    }
+    video_draw_buf_ = static_cast<uint8_t*>(
+        heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!video_draw_buf_) {
+        ESP_LOGE(TAG, "Failed to alloc draw buffer (%u)", static_cast<unsigned>(bytes));
+        return false;
+    }
+    video_draw_buf_size_ = bytes;
     return true;
 }
 
-bool Mp4Player::DrawFrameToLcd(uint16_t width, uint16_t height) {
-    if (!lcd_panel_ || !video_rgb565_buf_) return false;
+bool Mp4Player::DrawFrameToLcd(const uint8_t* frame,
+                               uint16_t width,
+                               uint16_t height,
+                               av_render_video_frame_type_t frame_type) {
+    if (!lcd_panel_ || !frame || width == 0 || height == 0) return false;
 
-    uint16_t draw_w = std::min(width, lcd_width_);
-    uint16_t draw_h = std::min(height, lcd_height_);
+    const uint16_t draw_w = std::min(width, lcd_width_);
+    const uint16_t draw_h = std::min(height, lcd_height_);
 
-    // Center the frame on LCD if smaller
-    int x_offset = (lcd_width_ - draw_w) / 2;
-    int y_offset = (lcd_height_ - draw_h) / 2;
+    const int x_offset = (lcd_width_ - draw_w) / 2;
+    const int y_offset = (lcd_height_ - draw_h) / 2;
+    const bool swap_bytes = (frame_type == AV_RENDER_VIDEO_RAW_TYPE_RGB565);
 
-    // If video fits horizontally, use direct row-chunked drawing
-    if (width <= lcd_width_) {
-        for (uint16_t row = 0; row < draw_h; row += MP4_BUFFER_LINES) {
-            uint16_t row_end = std::min(static_cast<uint16_t>(row + MP4_BUFFER_LINES), draw_h);
-            uint16_t* src_row = reinterpret_cast<uint16_t*>(video_rgb565_buf_) + (row * width);
-            
-            esp_err_t err = esp_lcd_panel_draw_bitmap(lcd_panel_,
-                x_offset, y_offset + row,
-                x_offset + draw_w, y_offset + row_end,
-                src_row);
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "draw_bitmap chunk failed: %s", esp_err_to_name(err));
-                return false;
-            }
-        }
-        return true;
-    }
-
-    // Video wider than LCD: crop each row
-    size_t row_size = draw_w * sizeof(uint16_t);
-    auto* cropped_row = static_cast<uint8_t*>(heap_caps_malloc(row_size * MP4_BUFFER_LINES, MALLOC_CAP_SPIRAM));
-    if (!cropped_row) {
-        ESP_LOGW(TAG, "Failed to alloc crop buffer");
+    const size_t chunk_bytes = static_cast<size_t>(draw_w) * MP4_BUFFER_LINES * sizeof(uint16_t);
+    if (!EnsureDrawBuffer(chunk_bytes)) {
         return false;
     }
 
-    bool success = true;
-    size_t src_stride = width * sizeof(uint16_t);
-    
+    const size_t src_stride = static_cast<size_t>(width) * sizeof(uint16_t);
+    const size_t row_bytes = static_cast<size_t>(draw_w) * sizeof(uint16_t);
+
     for (uint16_t row = 0; row < draw_h; row += MP4_BUFFER_LINES) {
-        uint16_t row_end = std::min(static_cast<uint16_t>(row + MP4_BUFFER_LINES), draw_h);
-        uint16_t rows_to_copy = row_end - row;
-        
-        // Copy cropped rows into buffer
+        const uint16_t row_end = std::min(static_cast<uint16_t>(row + MP4_BUFFER_LINES), draw_h);
+        const uint16_t rows_to_copy = row_end - row;
+
+        const uint8_t* src = frame + static_cast<size_t>(row) * src_stride;
+        uint8_t* dst = video_draw_buf_;
+
         for (uint16_t r = 0; r < rows_to_copy; ++r) {
-            uint8_t* src = video_rgb565_buf_ + (row + r) * src_stride;
-            uint8_t* dst = cropped_row + r * row_size;
-            memcpy(dst, src, row_size);
+            memcpy(dst, src, row_bytes);
+            if (swap_bytes) {
+                for (size_t i = 0; i < row_bytes; i += 2) {
+                    std::swap(dst[i], dst[i + 1]);
+                }
+            }
+            src += src_stride;
+            dst += row_bytes;
         }
-        
-        // Draw the cropped chunk
+
         esp_err_t err = esp_lcd_panel_draw_bitmap(lcd_panel_,
             x_offset, y_offset + row,
             x_offset + draw_w, y_offset + row_end,
-            cropped_row);
+            video_draw_buf_);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "draw_bitmap chunk failed: %s", esp_err_to_name(err));
-            success = false;
-            break;
+            ESP_LOGW(TAG, "draw_bitmap failed: %s", esp_err_to_name(err));
+            return false;
         }
     }
-    
-    heap_caps_free(cropped_row);
-    return success;
+    return true;
 }
 
 void Mp4Player::OutputPcmToCodec(const int16_t* pcm, size_t samples, int channels) {
@@ -921,7 +799,6 @@ void Mp4Player::OutputPcmToCodec(const int16_t* pcm, size_t samples, int channel
         out.assign(pcm, pcm + samples);
     }
 
-    // Apply volume if not already done in channel conversion
     if (dst_ch == channels && volume_factor_ != 1.0f) {
         for (auto& s : out) {
             s = ClampToInt16(static_cast<float>(s) * volume_factor_);
@@ -949,15 +826,39 @@ bool Mp4Player::IsSupportedMp4Name(const std::string& name) const {
     if (name.size() < 5) return false;
     std::string ext = name.substr(name.size() - 4);
     std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return static_cast<char>(tolower(c)); });
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return ext == ".mp4";
 }
 
-// ---------------------------------------------------------------------------
-// Playback task
-// ---------------------------------------------------------------------------
+av_render_audio_codec_t Mp4Player::MapAudioCodec(esp_extractor_format_t format) const {
+    switch (format) {
+        case ESP_EXTRACTOR_AUDIO_FORMAT_AAC:
+            return AV_RENDER_AUDIO_CODEC_AAC;
+        case ESP_EXTRACTOR_AUDIO_FORMAT_MP3:
+            return AV_RENDER_AUDIO_CODEC_MP3;
+        case ESP_EXTRACTOR_AUDIO_FORMAT_FLAC:
+            return AV_RENDER_AUDIO_CODEC_FLAC;
+        default:
+            return AV_RENDER_AUDIO_CODEC_NONE;
+    }
+}
+
+av_render_video_codec_t Mp4Player::MapVideoCodec(esp_extractor_format_t format) const {
+    switch (format) {
+        case ESP_EXTRACTOR_VIDEO_FORMAT_H264:
+            return AV_RENDER_VIDEO_CODEC_H264;
+        case ESP_EXTRACTOR_VIDEO_FORMAT_MJPEG:
+            return AV_RENDER_VIDEO_CODEC_MJPEG;
+        default:
+            return AV_RENDER_VIDEO_CODEC_NONE;
+    }
+}
 
 void Mp4Player::PlaybackTaskLoop() {
+    /* Max consecutive WAITING_OUTPUT ticks before giving up (~5 seconds). */
+    constexpr int kWaitingOutputMax = 5000;
+    int consecutive_waiting = 0;
+
     while (!stop_requested_.load()) {
         if (paused_.load()) {
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -967,14 +868,21 @@ void Mp4Player::PlaybackTaskLoop() {
         esp_extractor_frame_info_t frame = {};
         esp_extractor_err_t err = esp_extractor_read_frame(extractor_, &frame);
         if (err == ESP_EXTRACTOR_ERR_EOS) {
+            ESP_LOGI(TAG, "Extractor EOS");
             break;
         }
         if (err == ESP_EXTRACTOR_ERR_SKIPPED) {
+            consecutive_waiting = 0;
             std::lock_guard<std::mutex> lock(stats_mutex_);
             stats_.dropped_frames++;
             continue;
         }
         if (err == ESP_EXTRACTOR_ERR_WAITING_OUTPUT) {
+            if (++consecutive_waiting >= kWaitingOutputMax) {
+                ESP_LOGW(TAG, "Extractor WAITING_OUTPUT timeout (%d ms), force exit",
+                         kWaitingOutputMax);
+                break;
+            }
             vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
@@ -983,6 +891,9 @@ void Mp4Player::PlaybackTaskLoop() {
             break;
         }
 
+        consecutive_waiting = 0;
+
+        bool is_eos_frame = (frame.frame_flag & EXTRACTOR_FRAME_FLAG_EOS) != 0;
         bool ok = true;
         if (frame.frame_buffer) {
             if (frame.stream_type == ESP_EXTRACTOR_STREAM_TYPE_AUDIO) {
@@ -998,9 +909,32 @@ void Mp4Player::PlaybackTaskLoop() {
             stats_.dropped_frames++;
         }
 
-        if (frame.frame_flag & EXTRACTOR_FRAME_FLAG_EOS) {
+        /* Always break on EOS regardless of whether the frame was delivered. */
+        if (is_eos_frame) {
+            ESP_LOGI(TAG, "EOS frame received, ending loop");
             break;
         }
+    }
+
+    if (!stop_requested_.load()) {
+        PushEos();
+    }
+
+    /* Stop av_render's internal decode/render threads BEFORE invoking any
+     * callbacks or state transitions.  After extractor closes, av_render
+     * continues rendering queued frames (observed in logs as "Video pts:…"
+     * messages), holding the LCD during that time.  Calling av_render_reset()
+     * here sends CLOSE to all four internal threads and waits for them to
+     * exit, so no render callback (VideoRenderWrite → DrawFrameToLcd) is in
+     * flight when state_callback_ runs below. */
+    if (av_render_ && !stop_requested_.load()) {
+        ESP_LOGI(TAG, "Waiting for av_render threads to exit…");
+        av_render_reset(av_render_);
+        ESP_LOGI(TAG, "av_render_reset done");
+        /* Delay 500ms to ensure all av_render internal cleanup callbacks
+         * (VideoRenderClose, AudioRenderClose, etc.) finish before calling
+         * state_callback_ to avoid callback blocking. */
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 
     bool should_repeat = false;
@@ -1009,114 +943,223 @@ void Mp4Player::PlaybackTaskLoop() {
         should_repeat = end_callback_ ? end_callback_(ended_path) : false;
     }
 
+    ESP_LOGI(TAG, "1");
     playback_task_running_.store(false);
+    ESP_LOGI(TAG, "2");
     CleanupPlaybackResources();
+    ESP_LOGI(TAG, "3");
     current_file_path_.clear();
     stop_requested_.store(false);
     paused_.store(false);
-
+    ESP_LOGI(TAG, "4");
     if (!should_repeat) {
+        ESP_LOGI(TAG, "5");
         SetState(Mp4PlayerState::Idle);
+        ESP_LOGI(TAG, "6");
     }
+    ESP_LOGI(TAG, "7");
     ESP_LOGI(TAG, "Playback finished: %s", ended_path.c_str());
     vTaskDelete(NULL);
 }
 
-// ---------------------------------------------------------------------------
-// Render task - decode H264 and draw to LCD (independent core 0)
-// ---------------------------------------------------------------------------
-
-void Mp4Player::RenderTaskLoop() {
-    ESP_LOGI(TAG, "Render task started on core %d", xPortGetCoreID());
-    render_task_running_.store(true);
-
-    while (true) {
-        // Wait for a new H264 frame signal (or timeout to check exit flag)
-        if (xSemaphoreTake(frame_ready_sem_, pdMS_TO_TICKS(100)) != pdTRUE) {
-            if (render_exit_.load()) break;
-            continue;
-        }
-
-        if (render_exit_.load()) break;
-        if (stop_requested_.load() || paused_.load()) continue;
-
-        // Copy H264 frame from pending buffer to decode buffer
-        uint32_t h264_size;
-        uint16_t frame_w, frame_h;
-        xSemaphoreTake(h264_mutex_, portMAX_DELAY);
-        h264_size = pending_h264_size_;
-        frame_w = pending_frame_w_;
-        frame_h = pending_frame_h_;
-        if (h264_size > 0) {
-            memcpy(decode_h264_buf_, pending_h264_buf_, h264_size);
-        }
-        xSemaphoreGive(h264_mutex_);
-
-        if (h264_size == 0 || !video_dec_ || !color_convert_) {
-            continue;
-        }
-
-        // H264 decode in render task
-        esp_h264_dec_in_frame_t in_frame = {};
-        in_frame.raw_data.buffer = decode_h264_buf_;
-        in_frame.raw_data.len = h264_size;
-        in_frame.pts = 0;
-        in_frame.dts = 0;
-
-        while (in_frame.raw_data.len > 0) {
-            in_frame.consume = 0;
-            esp_h264_dec_out_frame_t out_frame = {};
-
-            esp_h264_err_t err = esp_h264_dec_process(video_dec_, &in_frame, &out_frame);
-            if (err != ESP_H264_ERR_OK) {
-                ESP_LOGW(TAG, "h264 dec err: %d", err);
-                break;
-            }
-
-            // Advance past consumed bytes
-            if (in_frame.consume > 0) {
-                in_frame.raw_data.buffer += in_frame.consume;
-                in_frame.raw_data.len -= in_frame.consume;
-            } else {
-                break;
-            }
-
-            if (out_frame.outbuf == nullptr || out_frame.out_size == 0) {
-                continue;  // SPS/PPS or buffering
-            }
-
-            // Resolution from container or decoder
-            if (video_width_ == 0 || video_height_ == 0) {
-                video_width_ = frame_w;
-                video_height_ = frame_h;
-            }
-
-            // Color convert I420 -> RGB565
-            esp_imgfx_data_t in_image = {
-                .data = out_frame.outbuf,
-                .data_len = out_frame.out_size,
-            };
-            esp_imgfx_data_t out_image = {
-                .data = video_rgb565_buf_,
-                .data_len = video_rgb565_buf_size_,
-            };
-            esp_imgfx_err_t conv_err = esp_imgfx_color_convert_process(color_convert_, &in_image, &out_image);
-            if (conv_err != ESP_IMGFX_ERR_OK) {
-                ESP_LOGW(TAG, "color convert err: %d", conv_err);
-                break;
-            }
-
-            // Frame callback
-            if (frame_callback_) {
-                frame_callback_(reinterpret_cast<uint16_t*>(video_rgb565_buf_), video_width_, video_height_);
-            }
-
-            // Draw to LCD
-            DrawFrameToLcd(video_width_, video_height_);
-        }
+int Mp4Player::AvRenderEventCb(av_render_event_t event, void* ctx) {
+    auto* self = static_cast<Mp4Player*>(ctx);
+    if (!self) {
+        return -1;
     }
 
-    render_task_running_.store(false);
-    ESP_LOGI(TAG, "Render task exiting");
-    vTaskDelete(NULL);
+    if (event == AV_RENDER_EVENT_AUDIO_DECODE_ERR || event == AV_RENDER_EVENT_VIDEO_DECODE_ERR) {
+        ESP_LOGE(TAG, "av_render decode error event=%d", static_cast<int>(event));
+        self->SetState(Mp4PlayerState::Error);
+    }
+    return 0;
+}
+
+audio_render_handle_t Mp4Player::AudioRenderInit(void* cfg, int cfg_size) {
+    if (!cfg || cfg_size != static_cast<int>(sizeof(RendererInitCfg))) {
+        return nullptr;
+    }
+    auto* init_cfg = static_cast<RendererInitCfg*>(cfg);
+    if (!init_cfg->owner) {
+        return nullptr;
+    }
+
+    auto* ctx = new AudioRenderCtx();
+    ctx->owner = init_cfg->owner;
+    return ctx;
+}
+
+int Mp4Player::AudioRenderOpen(audio_render_handle_t render, av_render_audio_frame_info_t* info) {
+    auto* ctx = static_cast<AudioRenderCtx*>(render);
+    if (!ctx || !ctx->owner || !info) {
+        return -1;
+    }
+    ctx->info = *info;
+
+    if (ctx->owner->audio_codec_) {
+        ctx->owner->audio_codec_->EnableOutput(true);
+        ctx->owner->audio_codec_->SetOutputSampleRate(static_cast<int>(info->sample_rate));
+    }
+    return 0;
+}
+
+int Mp4Player::AudioRenderWrite(audio_render_handle_t render, av_render_audio_frame_t* audio_data) {
+    auto* ctx = static_cast<AudioRenderCtx*>(render);
+    if (!ctx || !ctx->owner || !audio_data || !audio_data->data || audio_data->size <= 0) {
+        return -1;
+    }
+    if (ctx->info.bits_per_sample != 16 || ctx->info.channel == 0) {
+        ESP_LOGW(TAG, "Unsupported PCM format: bits=%u ch=%u",
+                 static_cast<unsigned>(ctx->info.bits_per_sample),
+                 static_cast<unsigned>(ctx->info.channel));
+        return -1;
+    }
+
+    auto* pcm = reinterpret_cast<int16_t*>(audio_data->data);
+    const size_t samples = static_cast<size_t>(audio_data->size) / sizeof(int16_t);
+
+    if (ctx->owner->audio_callback_) {
+        ctx->owner->audio_callback_(pcm, samples, ctx->info.channel);
+    }
+    ctx->owner->OutputPcmToCodec(pcm, samples, ctx->info.channel);
+    return 0;
+}
+
+int Mp4Player::AudioRenderGetLatency(audio_render_handle_t render, uint32_t* latency) {
+    if (!render || !latency) {
+        return -1;
+    }
+    *latency = 0;
+    return 0;
+}
+
+int Mp4Player::AudioRenderGetFrameInfo(audio_render_handle_t render, av_render_audio_frame_info_t* info) {
+    auto* ctx = static_cast<AudioRenderCtx*>(render);
+    if (!ctx || !info) {
+        return -1;
+    }
+    *info = ctx->info;
+    return 0;
+}
+
+int Mp4Player::AudioRenderSetSpeed(audio_render_handle_t render, float speed) {
+    if (!render) {
+        return -1;
+    }
+    (void)speed;
+    return 0;
+}
+
+int Mp4Player::AudioRenderClose(audio_render_handle_t render) {
+    auto* ctx = static_cast<AudioRenderCtx*>(render);
+    if (!ctx || !ctx->owner) {
+        return -1;
+    }
+
+    if (ctx->owner->audio_codec_) {
+        ctx->owner->audio_codec_->SetOutputSampleRate(-1);
+    }
+    ESP_LOGI(TAG, "AudioRenderClose called");
+    return 0;
+}
+
+void Mp4Player::AudioRenderDeinit(audio_render_handle_t render) {
+    auto* ctx = static_cast<AudioRenderCtx*>(render);
+    delete ctx;
+}
+
+video_render_handle_t Mp4Player::VideoRenderOpen(void* cfg, int size) {
+    if (!cfg || size != static_cast<int>(sizeof(RendererInitCfg))) {
+        return nullptr;
+    }
+    auto* init_cfg = static_cast<RendererInitCfg*>(cfg);
+    if (!init_cfg->owner) {
+        return nullptr;
+    }
+
+    auto* ctx = new VideoRenderCtx();
+    ctx->owner = init_cfg->owner;
+    return ctx;
+}
+
+bool Mp4Player::VideoRenderFormatSupported(video_render_handle_t render, av_render_video_frame_type_t type) {
+    if (!render) {
+        return false;
+    }
+    return type == AV_RENDER_VIDEO_RAW_TYPE_RGB565 || type == AV_RENDER_VIDEO_RAW_TYPE_RGB565_BE;
+}
+
+int Mp4Player::VideoRenderSetFrameInfo(video_render_handle_t render, av_render_video_frame_info_t* info) {
+    auto* ctx = static_cast<VideoRenderCtx*>(render);
+    if (!ctx || !ctx->owner || !info) {
+        return -1;
+    }
+    if (!VideoRenderFormatSupported(render, info->type)) {
+        return -1;
+    }
+
+    ctx->info = *info;
+    {
+        std::lock_guard<std::mutex> lock(ctx->owner->stats_mutex_);
+        ctx->owner->stats_.video_width = info->width;
+        ctx->owner->stats_.video_height = info->height;
+        ctx->owner->stats_.video_fps = info->fps;
+    }
+    return 0;
+}
+
+int Mp4Player::VideoRenderGetFrameBuffer(video_render_handle_t render, av_render_frame_buffer_t* frame_buffer) {
+    (void)render;
+    (void)frame_buffer;
+    return -1;
+}
+
+int Mp4Player::VideoRenderWrite(video_render_handle_t render, av_render_video_frame_t* video_data) {
+    auto* ctx = static_cast<VideoRenderCtx*>(render);
+    if (!ctx || !ctx->owner || !video_data || !video_data->data || video_data->size <= 0) {
+        return -1;
+    }
+
+    if (ctx->owner->frame_callback_) {
+        ctx->owner->frame_callback_(reinterpret_cast<uint16_t*>(video_data->data),
+                                    ctx->info.width,
+                                    ctx->info.height);
+    }
+
+    return ctx->owner->DrawFrameToLcd(video_data->data,
+                                      ctx->info.width,
+                                      ctx->info.height,
+                                      ctx->info.type)
+               ? 0
+               : -1;
+}
+
+int Mp4Player::VideoRenderGetLatency(video_render_handle_t render, uint32_t* latency) {
+    if (!render || !latency) {
+        return -1;
+    }
+    *latency = 0;
+    return 0;
+}
+
+int Mp4Player::VideoRenderGetFrameInfo(video_render_handle_t render, av_render_video_frame_info_t* info) {
+    auto* ctx = static_cast<VideoRenderCtx*>(render);
+    if (!ctx || !info) {
+        return -1;
+    }
+    *info = ctx->info;
+    return 0;
+}
+
+int Mp4Player::VideoRenderClear(video_render_handle_t render) {
+    (void)render;
+    ESP_LOGI(TAG, "VideoRenderClear called");
+    return 0;
+}
+
+int Mp4Player::VideoRenderClose(video_render_handle_t render) {
+    auto* ctx = static_cast<VideoRenderCtx*>(render);
+    delete ctx;
+    ESP_LOGI(TAG, "VideoRenderClose called");
+    return 0;
 }

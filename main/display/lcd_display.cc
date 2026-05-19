@@ -155,7 +155,7 @@ void LcdDisplay::HideIdleCard() {
  * When deactivated, the original UI elements are restored.
  * ------------------------------------------------------------------ */
 void LcdDisplay::SetMediaOverlayActive(bool active) {
-    DisplayLockGuard lock(this);
+    // DisplayLockGuard lock(this);
 
     if (active == media_overlay_active_) return;
     media_overlay_active_ = active;
