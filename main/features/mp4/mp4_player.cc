@@ -447,6 +447,7 @@ bool Mp4Player::PreparePlayback(const std::string& file_path) {
     }
 
     CleanupPlaybackResources();
+    ResetRenderEosFlags();
 
     file_ctx_.fp = fopen(file_path.c_str(), "rb");
     if (!file_ctx_.fp) {
@@ -714,6 +715,61 @@ bool Mp4Player::PushEos() {
     }
     ESP_LOGI(TAG, "PushEos: audio=%d video=%d", a_ret, v_ret);
     return (a_ret == 0 && v_ret == 0);
+}
+
+void Mp4Player::ResetRenderEosFlags() {
+    audio_render_eos_.store(false);
+    video_render_eos_.store(false);
+}
+
+bool Mp4Player::WaitForRenderDrain(uint32_t timeout_ms) {
+    if (!av_render_) {
+        return true;
+    }
+
+    const TickType_t sleep_ticks = pdMS_TO_TICKS(10);
+    const uint32_t max_loops = std::max<uint32_t>(1, timeout_ms / 10);
+
+    for (uint32_t i = 0; i < max_loops && !stop_requested_.load(); ++i) {
+        if (audio_render_eos_.load() && video_render_eos_.load()) {
+            return true;
+        }
+
+        av_render_fifo_stat_t audio_fifo = {};
+        av_render_fifo_stat_t video_fifo = {};
+        bool got_audio = (av_render_get_audio_fifo_level(av_render_, &audio_fifo) == 0);
+        bool got_video = (av_render_get_video_fifo_level(av_render_, &video_fifo) == 0);
+
+        bool audio_empty = (!got_audio) ||
+                           (audio_fifo.q_num <= 0 && audio_fifo.render_q_num <= 0 &&
+                            audio_fifo.data_size <= 0 && audio_fifo.render_data_size <= 0 &&
+                            audio_fifo.duration == 0);
+        bool video_empty = (!got_video) ||
+                           (video_fifo.q_num <= 0 && video_fifo.render_q_num <= 0 &&
+                            video_fifo.data_size <= 0 && video_fifo.render_data_size <= 0 &&
+                            video_fifo.duration == 0);
+        if (audio_empty && video_empty) {
+            return true;
+        }
+
+        vTaskDelay(sleep_ticks);
+    }
+
+    av_render_fifo_stat_t audio_fifo = {};
+    av_render_fifo_stat_t video_fifo = {};
+    (void)av_render_get_audio_fifo_level(av_render_, &audio_fifo);
+    (void)av_render_get_video_fifo_level(av_render_, &video_fifo);
+    ESP_LOGW(TAG,
+             "Timeout waiting render drain: audio_eos=%d video_eos=%d a(q=%d rq=%d dur=%lu) v(q=%d rq=%d dur=%lu)",
+             static_cast<int>(audio_render_eos_.load()),
+             static_cast<int>(video_render_eos_.load()),
+             audio_fifo.q_num,
+             audio_fifo.render_q_num,
+             static_cast<unsigned long>(audio_fifo.duration),
+             video_fifo.q_num,
+             video_fifo.render_q_num,
+             static_cast<unsigned long>(video_fifo.duration));
+    return false;
 }
 
 bool Mp4Player::EnsureDrawBuffer(size_t bytes) {
@@ -1074,13 +1130,17 @@ void Mp4Player::PlaybackTaskLoop() {
 
         /* Always break on EOS regardless of whether the frame was delivered. */
         if (is_eos_frame) {
-            ESP_LOGI(TAG, "EOS frame received, ending loop");
-            break;
+            if (ok) {
+                ESP_LOGI(TAG, "EOS frame received, ending loop");
+                break;
+            }
+            ESP_LOGW(TAG, "EOS frame was not queued, continue reading until extractor EOS");
         }
     }
 
-    if (!stop_requested_.load()) {
-        PushEos();
+    if (!stop_requested_.load() && PushEos()) {
+        // Allow av_render to consume all queued packets and emit stream EOS.
+        (void)WaitForRenderDrain(8000);
     }
 
     /* Stop av_render's internal decode/render threads BEFORE invoking any
@@ -1106,21 +1166,14 @@ void Mp4Player::PlaybackTaskLoop() {
         should_repeat = end_callback_ ? end_callback_(ended_path) : false;
     }
 
-    ESP_LOGI(TAG, "1");
     playback_task_running_.store(false);
-    ESP_LOGI(TAG, "2");
     CleanupPlaybackResources();
-    ESP_LOGI(TAG, "3");
     current_file_path_.clear();
     stop_requested_.store(false);
     paused_.store(false);
-    ESP_LOGI(TAG, "4");
     if (!should_repeat) {
-        ESP_LOGI(TAG, "5");
         SetState(Mp4PlayerState::Idle);
-        ESP_LOGI(TAG, "6");
     }
-    ESP_LOGI(TAG, "7");
     ESP_LOGI(TAG, "Playback finished: %s", ended_path.c_str());
     vTaskDelete(NULL);
 }
@@ -1129,6 +1182,12 @@ int Mp4Player::AvRenderEventCb(av_render_event_t event, void* ctx) {
     auto* self = static_cast<Mp4Player*>(ctx);
     if (!self) {
         return -1;
+    }
+
+    if (event == AV_RENDER_EVENT_AUDIO_EOS) {
+        self->audio_render_eos_.store(true);
+    } else if (event == AV_RENDER_EVENT_VIDEO_EOS) {
+        self->video_render_eos_.store(true);
     }
 
     if (event == AV_RENDER_EVENT_AUDIO_DECODE_ERR || event == AV_RENDER_EVENT_VIDEO_DECODE_ERR) {

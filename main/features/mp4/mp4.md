@@ -1,97 +1,145 @@
-# MP4 Player Feature — MP4 Playback with esp_extractor
+# MP4 Player Feature — MP4 Playback with esp_extractor + av_render
 
 ## Overview
 
-This component adds MP4 playback support for files stored on the SD card under the `video/` directory.
-It uses `espressif/esp_extractor` to demux MP4 containers, then routes:
+This component provides MP4 playback from SD card and runs audio/video pipelines through `av_render`.
 
-- H264 video frames to the H.264 software decoder, I420→RGB565 color conversion, and LCD panel
-- MP3 audio frames to the audio simple decoder and board speaker
+- Container: MP4
+- Audio codec accepted: AAC, MP3, FLAC
+- Video codec accepted: H264, MJPEG
+- Render output:
+    - `DirectLcd`: draw RGB565 frames directly to panel
+    - `LvglCanvas`: draw frames into LVGL canvas, with LCD fallback if canvas path fails
 
-This feature coexists with the existing AVI player and is intentionally narrower:
-
-- Container: MP4 only
-- Video codec: H264 only (software decode)
-- Audio codec: MP3 only
-- Video output: direct LCD draw in RGB565
+The player runs in its own FreeRTOS task and coexists with other media features.
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `features/mp4/mp4_player.h` | `Mp4Player` public API, state, playlist, and callbacks |
-| `features/mp4/mp4_player.cc` | MP4 extraction, H264 decode, MP3 decode, LCD/audio output |
+| `features/mp4/mp4_player.h` | `Mp4Player` API, state machine, playlist, callbacks |
+| `features/mp4/mp4_player.cc` | MP4 extraction, stream setup, AV render integration, LCD/LVGL output |
 | `features/mp4/mp4.md` | This document |
-| `CMakeLists.txt` | Added `features/mp4/mp4_player.cc` to SOURCES and `features/mp4` to INCLUDE_DIRS |
-| `application.h` | Added `Mp4Player*`, `InitMp4Video()`, `PlayMp4Video()`, `kMp4Video` media component |
-| `application.cc` | Wired init/stop/play lifecycle for MP4 player alongside AVI player |
+| `application.h` | `Mp4Player*`, init/play entry points, media integration |
+| `application.cc` | App lifecycle wiring for MP4 start/stop alongside other media |
 
 ## Playback Pipeline
 
 ```text
 SD card file (.mp4)
-    -> esp_extractor (MP4 demux)
-        -> audio track (MP3)
-            -> esp_audio_simple_dec (frame decode)
-            -> AudioCodec::OutputData()
-            -> I2S speaker output
-        -> video track (H264)
-            -> esp_h264_dec_sw (software decode, output I420)
-            -> esp_imgfx_color_convert (I420 -> RGB565_BE)
-            -> esp_lcd_panel_draw_bitmap()
-            -> LCD panel
+    -> esp_extractor (demux)
+        -> compressed audio/video packets
+            -> av_render queues
+                -> audio decode + render callback (PCM)
+                    -> AudioCodec::OutputData()
+                -> video decode + render callback (RGB565/RGB565_BE)
+                    -> Direct LCD draw OR LVGL canvas draw
 ```
 
-## Key Design Points
+## Sequence Diagram
 
-1. `esp_extractor` owns all MP4 demuxing. `esp_extractor_register_default()` is called once at init.
-2. The player accepts only MP4 files with H264 + MP3 tracks. Other codecs are rejected early.
-3. Video is decoded to I420 by `esp_h264_dec_sw` and converted to RGB565 before drawing.
-4. Audio is decoded with `esp_audio_simple_dec` (MP3 type, frame mode) and sent to the board's audio codec.
-5. H264 NALUs are processed in a loop using the `consume` field to handle multi-NALU packets.
-6. Files are discovered from `/<sd-mount>/video/` and sorted alphabetically.
-7. Playback runs in a dedicated FreeRTOS task so the application thread is not blocked.
-8. The MP4 player is a singleton, initialized alongside the AVI player in `Application::InitMp4Video()`.
-9. `StopOtherMedia()` stops MP4 playback when other media starts and vice versa.
+```mermaid
+sequenceDiagram
+        participant App as Application
+        participant Player as Mp4Player
+        participant Ext as esp_extractor
+        participant Render as av_render
+        participant LCD as LCD/LVGL
+        participant Codec as AudioCodec
 
-## Public API
+        App->>Player: Play(file)
+        Player->>Player: PreparePlayback()
+        Player->>Ext: open + parse_stream + get_stream_info
+        Player->>Render: add_audio_stream + add_video_stream
+        Player->>Player: start PlaybackTaskLoop()
+
+        loop While not stopped
+                Player->>Ext: read_frame()
+                Ext-->>Player: audio/video frame
+                alt Audio frame
+                        Player->>Render: av_render_add_audio_data()
+                        Render-->>Player: AudioRenderWrite(PCM)
+                        Player->>Codec: OutputPcmToCodec()
+                else Video frame
+                        Player->>Render: av_render_add_video_data()
+                        Render-->>Player: VideoRenderWrite(frame)
+                        Player->>LCD: DrawFrameToLcd/DrawFrameToCanvas
+                end
+        end
+
+        Player->>Render: PushEos(audio+video)
+        Render-->>Player: AV_RENDER_EVENT_AUDIO_EOS
+        Render-->>Player: AV_RENDER_EVENT_VIDEO_EOS
+        Player->>Player: WaitForRenderDrain(timeout)
+        Player->>Render: av_render_reset()
+        Player-->>App: state -> Idle
+```
+
+## End-Of-Stream Handling
+
+To avoid ending playback too early near the tail of file:
+
+1. EOS marker is pushed to both audio and video queues (`PushEos`).
+2. Player waits for render drain (`WaitForRenderDrain`) by checking:
+     - `AV_RENDER_EVENT_AUDIO_EOS` and `AV_RENDER_EVENT_VIDEO_EOS`, or
+     - both audio/video FIFO levels become empty.
+3. Only after drain, player calls `av_render_reset` and transitions to `Idle`.
+
+This prevents truncation where EOS is observed but queued tail frames are not fully rendered yet.
+
+## Directory Layout
+
+Default scan directory is:
+
+```text
+/sdcard/videos/*.mp4
+```
+
+`ScanDirectory()` lists regular `.mp4` files, sorts by filename, and stores up to `MP4_MAX_FILES` entries.
+
+## Public API (Typical)
 
 ```cpp
 Mp4Player& player = Mp4Player::GetInstance();
 
-player.Initialize(panel, lcd_w, lcd_h, codec, sd_card);
+player.Initialize(panel, lcd_w, lcd_h, codec, sd_card, display, Mp4RenderMode::DirectLcd);
+player.SetDirectory("videos");
 player.ScanDirectory();
-player.Play("/sdcard/video/demo.mp4");
 player.PlayFile("demo.mp4");
 player.Pause();
 player.Resume();
 player.Stop();
-player.Next();
-player.Prev();
 ```
 
-From `Application`:
-```cpp
-Application::GetInstance().PlayMp4Video("/sdcard/video/demo.mp4");
+## Notes and Limits
+
+- No scaling stage is implemented in this module; source should fit display constraints.
+- Output expects RGB565 path from render callbacks.
+- Supported codec map is fixed by `MapAudioCodec` and `MapVideoCodec`.
+
+## Convert MP4 for Device Playback
+
+Use this ffmpeg command to convert a source MP4 to a device-friendly file
+(320x240, 10 FPS, H264 baseline, GOP 10):
+
+```bash
+ffmpeg -i cmnq.mp4 -vf "scale=320:240,fps=10" -c:v libx264 -profile:v baseline -level 2.0 -g 10 -pix_fmt yuv420p -b:v 500k video_30s_cmnq.mp4
 ```
 
-## Directory Layout
+Quick notes:
 
-Place media files here:
-
-```text
-/sdcard/video/*.mp4
-```
-
-## Requirements
-
-- MP4 container with H264 video + MP3 audio tracks
-- Video resolution must fit the LCD panel (no scaling in v1)
-- ESP32-S3 or ESP32-P4 target (esp_extractor and esp_h264 are target-gated)
+- Keep output under `/sdcard/videos/` so `ScanDirectory()` can find it.
+- If playback is unstable, reduce bitrate further (for example: `-b:v 300k`).
 
 ## Troubleshooting
 
-- If playback fails immediately, check the MP4 track codecs with `esp_extractor_get_stream_info`.
-- If video is larger than the LCD, reduce the source resolution or add a scaling step.
-- If audio is silent, verify that the board's audio codec is enabled and the MP3 track is present.
-- If `InitMp4Video()` logs "display is not LCD", the board uses OLED and cannot render video.
+- Playback ends too early:
+    - check logs for `PushEos`, `AV_RENDER_EVENT_*_EOS`, and `WaitForRenderDrain` timeout messages.
+- No video:
+    - verify track codec is H264 or MJPEG.
+    - verify display mode (`DirectLcd` vs `LvglCanvas`) and panel/display pointers are valid.
+- No audio:
+    - verify audio track codec is AAC/MP3/FLAC.
+    - verify board codec is enabled and output sample-rate reconfiguration succeeds.
+- Scan returns empty:
+    - verify files are under `/sdcard/videos/` and extension is `.mp4`.

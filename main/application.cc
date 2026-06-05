@@ -447,11 +447,11 @@ void Application::Start() {
             PlayVideo("/sdcard/videos/video_15s.avi");
             vTaskDelay(pdMS_TO_TICKS(16000)); // Play for 15 seconds
 #endif
-#if (1) // Test video playback mp4 video from SD card
+#if (0) // Test video playback mp4 video from SD card
             InitMp4Video();
-            if (PlayMp4Video("/sdcard/videos/video_15s.mp4")) {
+            if (PlayMp4Video("/sdcard/videos/video_30s.mp4")) {
                 ESP_LOGI(TAG, "Playing MP4 video");
-                vTaskDelay(pdMS_TO_TICKS(20000)); // Play for 20 seconds
+                vTaskDelay(pdMS_TO_TICKS(31000)); // Play for 31 seconds
             } else {
                 ESP_LOGE(TAG, "Failed to play MP4 video");
             }

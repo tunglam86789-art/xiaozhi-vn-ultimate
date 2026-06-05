@@ -170,6 +170,8 @@ private:
     bool ProcessAudioFrame(const esp_extractor_frame_info_t& frame);
     bool ProcessVideoFrame(const esp_extractor_frame_info_t& frame);
     bool PushEos();
+    void ResetRenderEosFlags();
+    bool WaitForRenderDrain(uint32_t timeout_ms);
     bool DrawFrameToLcd(const uint8_t* frame, uint16_t width, uint16_t height, av_render_video_frame_type_t frame_type);
     bool DrawFrameToCanvas(const uint8_t* frame, uint16_t width, uint16_t height, av_render_video_frame_type_t frame_type);
     void CreateVideoCanvas();
@@ -193,6 +195,8 @@ private:
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> paused_{false};
     std::atomic<bool> playback_task_running_{false};
+    std::atomic<bool> audio_render_eos_{false};
+    std::atomic<bool> video_render_eos_{false};
 
     TaskHandle_t playback_task_handle_ = nullptr;
 #if MP4_PLAYER_STATIC_TASK_CREATION == 1
