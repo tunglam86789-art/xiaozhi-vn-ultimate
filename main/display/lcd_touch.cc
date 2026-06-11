@@ -99,7 +99,7 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         return;
     }
 
-    ESP_LOGD(TAG, "Touch points detected: %d, at (%d, %d)", touch_cnt, point_data[0].x, point_data[0].y);
+    ESP_LOGI(TAG, "Touch points detected: %d, at (%d, %d)", touch_cnt, point_data[0].x, point_data[0].y);
 
     if (err == ESP_OK && touch_cnt > 0 && touch_cnt <= TOUCH_MAX_POINT) {
         data->state = LV_INDEV_STATE_PRESSED;
@@ -156,13 +156,12 @@ void LcdTouch::touch_driver_read(lv_indev_t *drv, lv_indev_data_t *data) {
         data->state = LV_INDEV_STATE_RELEASED;
         // Handle touch release (end of touch)
         if (was_touching_) { // Debounce release
-            int64_t current_time = esp_timer_get_time();
+             int64_t current_time = esp_timer_get_time();
             int32_t time_since_release = current_time - touch_end_time_;
-            ESP_LOGI(TAG, "Time since last touch point: %d us, release timeout: %d us", time_since_release, release_timeout_us_);
-            if (time_since_release > release_timeout_us_) {
-                if (!gesture_detected_ && !long_press_detected_) {
-                    ESP_LOGI(TAG, "Touch release confirmed after %d us", time_since_release);
-                    HandleTouchRelease();
+                ESP_LOGI(TAG, "Time since last touch point: %d us, release timeout: %d us", (int)time_since_release, (int)release_timeout_us_);
+        if (time_since_release > release_timeout_us_) {
+            if (!gesture_detected_ && !long_press_detected_) {
+                ESP_LOGI(TAG, "Touch release confirmed after %d us", (int)time_since_release);
                 }
                 was_touching_ = false;
                 release_timeout_us_ = gesture_config_.release_timeout_us; // Reset to default
@@ -183,7 +182,7 @@ void LcdTouch::HandleTouchPress(int16_t x, int16_t y) {
     long_press_detected_ = false;
     is_swiping_ = false;  // Reset swipe flag
     
-    ESP_LOGD(TAG, "Touch press at (%d, %d) at time %lld", x, y, touch_start_time_);
+    ESP_LOGI(TAG, "Touch press at (%d, %d) at time %lld", x, y, touch_start_time_);
 }
 
 void LcdTouch::HandleTouchRefresh(int16_t x, int16_t y) {
@@ -198,7 +197,7 @@ void LcdTouch::HandleTouchRefresh(int16_t x, int16_t y) {
 void LcdTouch::HandleTouchRelease() {
     int64_t touch_duration = esp_timer_get_time() - touch_start_time_;
     
-    ESP_LOGD(TAG, "Touch release after %lld us, is_swiping_=%d", touch_duration, is_swiping_);
+    ESP_LOGI(TAG, "Touch release after %lld us, is_swiping_=%d", touch_duration, is_swiping_);
     
     // Only trigger tap if no swipe was detected (same logic as custom_touch_read_cb)
     if (!is_swiping_ && !gesture_detected_) {
@@ -222,7 +221,7 @@ void LcdTouch::HandleTouchRelease() {
             last_tap_time_ = current_time;
         }
     } else if (is_swiping_) {
-        ESP_LOGD(TAG, "Swipe completed, no tap action");
+        ESP_LOGI(TAG, "Swipe completed, no tap action");
     }
     
     // Reset swipe flag for next touch
@@ -286,28 +285,28 @@ void LcdTouch::SetSwipeThreshold(int16_t threshold) {
 
 void LcdTouch::SetSwipeTimeout(int32_t timeout_us) {
     gesture_config_.swipe_timeout_us = timeout_us;
-    ESP_LOGI(TAG, "Swipe timeout set to %lld us", timeout_us);
+    ESP_LOGI(TAG, "Swipe timeout set to %ld us", timeout_us);
 }
 
 void LcdTouch::SetTapTimeout(int32_t timeout_us) {
     gesture_config_.tap_timeout_us = timeout_us;
-    ESP_LOGI(TAG, "Tap timeout set to %lld us", timeout_us);
+    ESP_LOGI(TAG, "Tap timeout set to %ld us", timeout_us);
 }
 
 void LcdTouch::SetDoubleTapWindow(int32_t window_us) {
     gesture_config_.double_tap_window_us = window_us;
-    ESP_LOGI(TAG, "Double tap window set to %lld us", window_us);
+    ESP_LOGI(TAG, "Double tap window set to %ld us", window_us);
 }
 
 void LcdTouch::SetLongPressTime(int32_t time_us) {
     gesture_config_.long_press_time_us = time_us;
-    ESP_LOGI(TAG, "Long press time set to %lld us", time_us);
+    ESP_LOGI(TAG, "Long press time set to %ld us", time_us);
 }
 
 void LcdTouch::SetReleaseTimeout(int32_t time_us) {
     gesture_config_.release_timeout_us = time_us;
     release_timeout_us_ = time_us;
-    ESP_LOGI(TAG, "Release timeout set to %lld us", time_us);
+    ESP_LOGI(TAG, "Release timeout set to %ld us", time_us);
 }
 
 esp_lcd_touch_handle_t LcdTouch::GetTouchHandle() const {

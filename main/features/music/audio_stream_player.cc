@@ -753,7 +753,7 @@ void AudioStreamPlayer::PlayLoopCompressed()
         esp_audio_err_t ret = esp_audio_simple_dec_process(decoder_, &raw, &out);
 
         if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
-            ESP_LOGI(TAG, "Decoder needs bigger output buffer: %zu bytes",
+            ESP_LOGI(TAG, "Decoder needs bigger output buffer: %lu bytes",
                      out.needed_size);
             if (decoder_type_ == AudioDecoderType::AAC) {
                 dec_out_vec_.resize(out.needed_size);
@@ -800,11 +800,14 @@ void AudioStreamPlayer::PlayLoopCompressed()
             continue;
         }
 
-        if (!dec_info_ready_ && dec_info_.sample_rate > 0) {
-            dec_info_ready_ = true;
-            ESP_LOGI(TAG, "Stream: %d Hz, %d bit, %d ch, %d kbps, %d frame size",
-                     dec_info_.sample_rate, dec_info_.bits_per_sample, dec_info_.channel, dec_info_.bitrate, dec_info_.frame_size);
-            OnStreamInfoReady(dec_info_.sample_rate, dec_info_.bits_per_sample, dec_info_.channel, dec_info_.bitrate, dec_info_.frame_size);
+         if (!dec_info_ready_ && dec_info_.sample_rate > 0) {
+        dec_info_ready_ = true;
+        ESP_LOGI(TAG, "Stream: %d Hz, %d bit, %d ch, %d kbps, %d frame size",
+                 (int)dec_info_.sample_rate, 
+                 (int)dec_info_.bits_per_sample, 
+                 (int)dec_info_.channel, 
+                 (int)dec_info_.bitrate, 
+                 (int)dec_info_.frame_size);
         }
 
         total_frames_decoded_++;
