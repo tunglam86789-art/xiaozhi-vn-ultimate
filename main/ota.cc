@@ -170,15 +170,15 @@ Body for check version request data:
 Server response:
 {
     "mqtt": {
-        "endpoint": "mqtt.xiaozhi.me",
+        "endpoint": "192.168.50.4:1883",
         "client_id": "GID_test@@@90_70_69_19_9d_00@@@15040d5c-6f08-4244-9062-...",
-        "username": "eyJpcCI6IjE3MS4yNDAu...",
-        "password": "2wKM7rd6bgXz9oRj24QsOs/EI9Y7QF...",
-        "publish_topic": "device-server",
-        "subscribe_topic": "null"
+        "username": "",
+        "password": "",
+        "publish_topic": "xiaozhi/status",
+        "subscribe_topic": "xiaozhi/command"
     },
     "websocket": {
-        "url": "wss://api.tenclass.net/xiaozhi/v1/",
+        "url": "wss://ai.nhacuaken.xyz/xiaozhi/v1/",
         "token": "test-token"
     },
     "server_time": {
@@ -192,6 +192,7 @@ Server response:
 }
  */
 bool Ota::CheckVersion(std::string& url) {
+    
     auto& board = Board::GetInstance();
     auto app_desc = esp_app_get_description();
 
