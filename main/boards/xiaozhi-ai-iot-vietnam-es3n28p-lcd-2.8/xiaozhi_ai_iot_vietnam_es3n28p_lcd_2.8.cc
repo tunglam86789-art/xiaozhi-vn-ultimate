@@ -457,14 +457,359 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
         default:
             break;
       } });
-    ESP_LOGI(TAG, "Touch screen is ready - try touching now...");
+    ESP_LOGI(TAG, "Touch scr is ready - try touching now...");
   }
 #endif
 
+static lv_obj_t*& MainMenuOverlay() {
+    static lv_obj_t* object = nullptr;
+    return object;
+}
+
+static lv_obj_t*& KenRoomOverlay() {
+    static lv_obj_t* object = nullptr;
+    return object;
+}
+
+static void BackToMainMenuEvent(lv_event_t* event) {
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED) {
+        return;
+    }
+
+    if (KenRoomOverlay() != nullptr) {
+        lv_obj_del(KenRoomOverlay());
+        KenRoomOverlay() = nullptr;
+    }
+
+    OpenMainMenu();
+}
+
+static void OpenKenRoomPage() {
+    lv_obj_t* screen = lv_obj_create(nullptr);
+    lv_obj_remove_style_all(screen);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0xF3F4F6), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Thanh tiêu đề
+    lv_obj_t* header = lv_obj_create(screen);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, 320, 42);
+    lv_obj_set_pos(header, 0, 0);
+    lv_obj_set_style_bg_color(header, lv_color_hex(0x2563EB), 0);
+    lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
+
+    lv_obj_t* back_button = lv_button_create(header);
+    lv_obj_set_size(back_button, 54, 30);
+    lv_obj_align(back_button, LV_ALIGN_LEFT_MID, 6, 0);
+    lv_obj_set_style_radius(back_button, 8, 0);
+    lv_obj_set_style_bg_color(back_button, lv_color_hex(0x1D4ED8), 0);
+    lv_obj_add_event_cb(
+        back_button,
+        BackToMainMenuEvent,
+        LV_EVENT_CLICKED,
+        nullptr
+    );
+
+    lv_obj_t* back_label = lv_label_create(back_button);
+    lv_label_set_text(back_label, "<");
+    lv_obj_set_style_text_color(back_label, lv_color_white(), 0);
+    lv_obj_center(back_label);
+
+    lv_obj_t* title = lv_label_create(header);
+    lv_label_set_text(title, "PHONG KEN");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 20, 0);
+
+    // Thẻ nhiệt độ
+    lv_obj_t* temp_card = lv_obj_create(screen);
+    lv_obj_set_size(temp_card, 142, 78);
+    lv_obj_set_pos(temp_card, 10, 54);
+    lv_obj_set_style_radius(temp_card, 14, 0);
+    lv_obj_set_style_bg_color(temp_card, lv_color_white(), 0);
+    lv_obj_set_style_border_width(temp_card, 0, 0);
+    lv_obj_set_style_shadow_width(temp_card, 8, 0);
+    lv_obj_set_style_shadow_opa(temp_card, LV_OPA_10, 0);
+    lv_obj_clear_flag(temp_card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* temp_title = lv_label_create(temp_card);
+    lv_label_set_text(temp_title, "Nhiet do");
+    lv_obj_set_style_text_color(temp_title, lv_color_hex(0x6B7280), 0);
+    lv_obj_align(temp_title, LV_ALIGN_TOP_LEFT, 4, 2);
+
+    lv_obj_t* temp_value = lv_label_create(temp_card);
+    lv_label_set_text(temp_value, "--.- C");
+    lv_obj_set_style_text_color(temp_value, lv_color_hex(0xEF4444), 0);
+    lv_obj_align(temp_value, LV_ALIGN_BOTTOM_LEFT, 4, -4);
+
+    // Thẻ độ ẩm
+    lv_obj_t* humidity_card = lv_obj_create(screen);
+    lv_obj_set_size(humidity_card, 142, 78);
+    lv_obj_set_pos(humidity_card, 168, 54);
+    lv_obj_set_style_radius(humidity_card, 14, 0);
+    lv_obj_set_style_bg_color(humidity_card, lv_color_white(), 0);
+    lv_obj_set_style_border_width(humidity_card, 0, 0);
+    lv_obj_set_style_shadow_width(humidity_card, 8, 0);
+    lv_obj_set_style_shadow_opa(humidity_card, LV_OPA_10, 0);
+    lv_obj_clear_flag(humidity_card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* humidity_title = lv_label_create(humidity_card);
+    lv_label_set_text(humidity_title, "Do am");
+    lv_obj_set_style_text_color(humidity_title, lv_color_hex(0x6B7280), 0);
+    lv_obj_align(humidity_title, LV_ALIGN_TOP_LEFT, 4, 2);
+
+    lv_obj_t* humidity_value = lv_label_create(humidity_card);
+    lv_label_set_text(humidity_value, "-- %");
+    lv_obj_set_style_text_color(humidity_value, lv_color_hex(0x0EA5E9), 0);
+    lv_obj_align(humidity_value, LV_ALIGN_BOTTOM_LEFT, 4, -4);
+
+    // Nút điều hòa
+    lv_obj_t* air_button = lv_button_create(screen);
+    lv_obj_set_size(air_button, 142, 70);
+    lv_obj_set_pos(air_button, 10, 146);
+    lv_obj_set_style_radius(air_button, 14, 0);
+    lv_obj_set_style_bg_color(air_button, lv_color_hex(0x38BDF8), 0);
+
+    lv_obj_t* air_label = lv_label_create(air_button);
+    lv_label_set_text(air_label, "DIEU HOA\nDang tat");
+    lv_obj_set_style_text_align(air_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(air_label, lv_color_white(), 0);
+    lv_obj_center(air_label);
+
+    // Nút quạt
+    lv_obj_t* fan_button = lv_button_create(screen);
+    lv_obj_set_size(fan_button, 142, 70);
+    lv_obj_set_pos(fan_button, 168, 146);
+    lv_obj_set_style_radius(fan_button, 14, 0);
+    lv_obj_set_style_bg_color(fan_button, lv_color_hex(0x34D399), 0);
+
+    lv_obj_t* fan_label = lv_label_create(fan_button);
+    lv_label_set_text(fan_label, "QUAT\nDang tat");
+    lv_obj_set_style_text_align(fan_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(fan_label, lv_color_white(), 0);
+    lv_obj_center(fan_label);
+
+    lv_screen_load_anim(
+        screen,
+        LV_SCR_LOAD_ANIM_FADE_IN,
+        180,
+        0,
+        false
+    );
+
+    ESP_LOGI(TAG, "Ken room page opened");
+}
+
+static void MainMenuButtonEvent(lv_event_t* event) {
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED) {
+        return;
+    }
+
+    int index = static_cast<int>(
+        reinterpret_cast<intptr_t>(lv_event_get_user_data(event))
+    );
+
+    static const char* names[6] = {
+        "Chat",
+        "Tro ly",
+        "May tinh",
+        "Bo dam",
+        "Radio",
+        "Phong Ken"
+    };
+
+    ESP_LOGI(TAG, "Main menu button clicked: %s", names[index]);
+
+    if (index == 5) {
+        OpenKenRoomPage();
+    }
+}
+
+static void OpenMainMenu() {
+    // Đóng trang Home Ken nếu đang mở
+    if (KenRoomOverlay() != nullptr) {
+        lv_obj_del(KenRoomOverlay());
+        KenRoomOverlay() = nullptr;
+    }
+
+    // Menu đã tồn tại thì chỉ hiện lại
+    if (MainMenuOverlay() != nullptr) {
+        lv_obj_clear_flag(MainMenuOverlay(), LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(MainMenuOverlay());
+        return;
+    }
+
+    // Overlay phủ lên màn hình Xiaozhi gốc
+    lv_obj_t* screen = lv_obj_create(lv_scr_act());
+    MainMenuOverlay() = screen;
+
+    lv_obj_remove_style_all(screen);
+    lv_obj_set_size(screen, 320, 240);
+    lv_obj_align(screen, LV_ALIGN_CENTER, 0, 0);
+
+    // Nền đen đúng yêu cầu
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+
+    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+
+    static const char* names[6] = {
+        "Chat",
+        "Tro ly",
+        "May tinh",
+        "Bo dam",
+        "Radio",
+        "Home Ken"
+    };
+
+    // Dùng symbol có sẵn trong LVGL
+    static const char* icons[6] = {
+        LV_SYMBOL_AUDIO,
+        LV_SYMBOL_BELL,
+        LV_SYMBOL_LIST,
+        LV_SYMBOL_CALL,
+        LV_SYMBOL_VOLUME_MAX,
+        LV_SYMBOL_HOME
+    };
+
+    static const uint32_t colors[6] = {
+        0xF2D600,  // Chat
+        0x19CFE3,  // Trợ lý
+        0x25C9D8,  // Máy tính
+        0x31D39B,  // Bộ đàm
+        0xF0543D,  // Radio
+        0x8BAEFF   // Home Ken
+    };
+
+    constexpr int item_width  = 96;
+    constexpr int item_height = 102;
+
+    constexpr int start_x = 8;
+    constexpr int start_y = 13;
+
+    constexpr int step_x = 104;
+    constexpr int step_y = 112;
+
+    for (int index = 0; index < 6; ++index) {
+        const int column = index % 3;
+        const int row = index / 3;
+
+        // Toàn bộ vùng bấm
+        lv_obj_t* item = lv_obj_create(screen);
+        lv_obj_remove_style_all(item);
+
+        lv_obj_set_size(item, item_width, item_height);
+        lv_obj_set_pos(
+            item,
+            start_x + column * step_x,
+            start_y + row * step_y
+        );
+
+        lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(item, LV_OBJ_FLAG_CLICKABLE);
+
+        lv_obj_add_event_cb(
+            item,
+            MainMenuButtonEvent,
+            LV_EVENT_CLICKED,
+            reinterpret_cast<void*>(static_cast<intptr_t>(index))
+        );
+
+        // Ô màu chứa icon
+        lv_obj_t* icon_box = lv_obj_create(item);
+        lv_obj_remove_style_all(icon_box);
+
+        lv_obj_set_size(icon_box, 58, 58);
+        lv_obj_align(icon_box, LV_ALIGN_TOP_MID, 0, 0);
+
+        lv_obj_set_style_radius(icon_box, 14, 0);
+        lv_obj_set_style_bg_color(
+            icon_box,
+            lv_color_hex(colors[index]),
+            0
+        );
+        lv_obj_set_style_bg_opa(icon_box, LV_OPA_COVER, 0);
+
+        // Viền sáng nhẹ
+        lv_obj_set_style_border_width(icon_box, 1, 0);
+        lv_obj_set_style_border_color(
+            icon_box,
+            lv_color_hex(0xFFFFFF),
+            0
+        );
+        lv_obj_set_style_border_opa(icon_box, LV_OPA_20, 0);
+
+        // Bóng nhẹ
+        lv_obj_set_style_shadow_width(icon_box, 8, 0);
+        lv_obj_set_style_shadow_opa(icon_box, LV_OPA_20, 0);
+
+        lv_obj_clear_flag(icon_box, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(icon_box, LV_OBJ_FLAG_CLICKABLE);
+
+        // Icon trắng
+        lv_obj_t* icon_label = lv_label_create(icon_box);
+        lv_label_set_text(icon_label, icons[index]);
+
+        // Phải dùng font mặc định để LV_SYMBOL hiển thị
+        lv_obj_set_style_text_font(icon_label, LV_FONT_DEFAULT, 0);
+        lv_obj_set_style_text_color(
+            icon_label,
+            lv_color_white(),
+            0
+        );
+        lv_obj_center(icon_label);
+
+        // Tên chức năng
+        lv_obj_t* name_label = lv_label_create(item);
+        lv_label_set_text(name_label, names[index]);
+
+        lv_obj_set_width(name_label, item_width);
+        lv_obj_set_style_text_align(
+            name_label,
+            LV_TEXT_ALIGN_CENTER,
+            0
+        );
+        lv_obj_set_style_text_color(
+            name_label,
+            lv_color_white(),
+            0
+        );
+
+        // Font nhỏ, gọn hơn bản trước
+        lv_obj_set_style_text_font(
+            name_label,
+            &lv_font_montserrat_14,
+            0
+        );
+
+        lv_obj_align(
+            name_label,
+            LV_ALIGN_BOTTOM_MID,
+            0,
+            -6
+        );
+    }
+
+    lv_obj_move_foreground(screen);
+
+    ESP_LOGI(TAG, "Main menu overlay opened");
+}
+
+static void ToggleMainMenuAsync(void*) {
+    if (MainMenuOverlay() != nullptr &&
+        !lv_obj_has_flag(MainMenuOverlay(), LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(MainMenuOverlay(), LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    OpenMainMenu();
+}
+
+
   void InitializeButtons() {
     boot_button_.OnMultipleClick([this]() {
-        ResetWifiConfiguration();
-    }, 5);
+    lv_async_call(ToggleMainMenuAsync, nullptr);
+}, 3);
 
     boot_button_.OnClick([this]() {
       auto &app = Application::GetInstance();
@@ -490,7 +835,9 @@ class XiaozhiAIIoTEs3n28p : public WifiBoard {
     InitializeLcdDisplay();
 #ifdef CONFIG_TOUCH_PANEL_ENABLE
     InitializeTouch();
-#endif
+ //   lv_async_call(CreateMainMenuAsync, nullptr);
+
+   #endif
     InitializeButtons();
     InitializeTools();
     if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
