@@ -2,7 +2,9 @@
  * MCP Server Implementation
  * Reference: https://modelcontextprotocol.io/specification/2024-11-05
  */
-
+#include "mqtt_manager.h"
+#include <cstdio>
+#include <string>
 #include "mcp_server.h"
 #include <esp_log.h>
 #include <esp_app_desc.h>
@@ -42,6 +44,59 @@ void McpServer::AddCommonTools() {
     // Do not add custom tools here.
     // Custom tools must be added in the board's InitializeTools function.
 
+    AddTool(
+    "self.home.get_electricity",
+    "Đọc công suất hiện tại, điện năng hôm nay, điện năng tháng này, tiền điện hôm nay, tiền điện tháng này và dự đoán tiền điện cuối tháng.",
+    PropertyList(),
+    [](const PropertyList& properties) -> ReturnValue {
+        auto data = MqttManager::GetInstance().GetElectricityData();
+
+        if (!data.valid) {
+            return std::string("Chưa nhận được dữ liệu điện từ Home Assistant.");
+        }
+
+        char result[512];
+
+        char today_kwh_text[32];
+char month_kwh_text[32];
+char power_text[32];
+
+snprintf(today_kwh_text, sizeof(today_kwh_text), "%.2f", data.today_kwh);
+snprintf(month_kwh_text, sizeof(month_kwh_text), "%.2f", data.month_kwh);
+snprintf(power_text, sizeof(power_text), "%.2f", data.power_kw);
+
+// Đổi dấu chấm thành dấu phẩy để AI tiếng Việt đọc đúng
+for (char* p = today_kwh_text; *p; ++p) {
+    if (*p == '.') *p = ',';
+}
+
+for (char* p = month_kwh_text; *p; ++p) {
+    if (*p == '.') *p = ',';
+}
+
+for (char* p = power_text; *p; ++p) {
+    if (*p == '.') *p = ',';
+}
+
+        snprintf(
+    result,
+    sizeof(result),
+    "Công suất hiện tại là %s kilowatt. "
+    "Hôm nay đã dùng %s số điện, tương đương khoảng %.0f đồng. "
+    "Tháng này đã dùng %s số điện, tương đương khoảng %.0f đồng. "
+    "Dự kiến cuối tháng khoảng %.0f đồng.",
+    power_text,
+    today_kwh_text,
+    data.today_cost,
+    month_kwh_text,
+    data.month_cost,
+    data.forecast_cost
+);
+
+        return std::string(result);
+    }
+);
+
     AddTool("self.get_device_status",
             "Provides the real-time information of the device...\n"
             "\n"
@@ -65,6 +120,8 @@ void McpServer::AddCommonTools() {
             {
                 return board.GetDeviceStatusJson();
             });
+
+            
 
     AddTool("self.audio_speaker.set_volume", 
         "Set the volume of the audio speaker. If the current volume is unknown, you must call `self.get_device_status` tool first and then call this tool.",

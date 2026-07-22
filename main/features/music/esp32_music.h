@@ -24,10 +24,10 @@
 /* ------------------------------------------------------------------ */
 
 /** Default music server URL */
-#define DEFAULT_MUSIC_URL       "http://www.xiaozhishop.xyz:5005"
+#define DEFAULT_MUSIC_URL       "https://music-api.nhacuaken.xyz"
 
 /** Lyric buffer latency compensation (ms) */
-#define LYRIC_LATENCY_OFFSET_MS 600
+#define LYRIC_LATENCY_OFFSET_MS 0
 
 /* ------------------------------------------------------------------ */
 /*  Esp32Music                                                        */

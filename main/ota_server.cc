@@ -18,10 +18,17 @@ namespace {
 
 const char* kTag = "OTA_WEB";
 
-extern const uint8_t ota_index_html_start[] asm("_binary_ota_index_html_start");
-extern const uint8_t ota_index_html_end[] asm("_binary_ota_index_html_end");
-extern const uint8_t assets_index_html_start[] asm("_binary_assets_index_html_start");
-extern const uint8_t assets_index_html_end[] asm("_binary_assets_index_html_end");
+extern const uint8_t ota_index_html_start[]
+    asm("_binary_ota_index_html_start");
+
+extern const uint8_t ota_index_html_end[]
+    asm("_binary_ota_index_html_end");
+
+extern const uint8_t assets_index_html_start[]
+    asm("_binary_assets_index_html_start");
+
+extern const uint8_t assets_index_html_end[]
+    asm("_binary_assets_index_html_end");
 
 const char* kOtaIndexHtml = reinterpret_cast<const char*>(ota_index_html_start);
 const char* kAssetIndexHtml = reinterpret_cast<const char*>(assets_index_html_start);

@@ -265,6 +265,7 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
     full_info_displayed_ = false;
 
     /* Start streaming */
+    
     StartStreaming(current_music_url_);
 
     /* Build lyric URL & start lyrics if in lyric display mode */

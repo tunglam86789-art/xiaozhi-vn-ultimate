@@ -19,7 +19,7 @@
 #define CARD_SDMMC_CMD_GPIO GPIO_NUM_40
 #define CARD_SDMMC_D0_GPIO GPIO_NUM_39
 #endif
-#endif // CONFIG_SD_CARD_MMC_INTERFACE
+#endif// CONFIG_SD_CARD_MMC_INTERFACE
 
 #ifdef CONFIG_SD_CARD_SPI_INTERFACE
 #define CARD_SPI_MOSI_GPIO GPIO_NUM_40  // DI
@@ -70,7 +70,7 @@
 #define DISPLAY_CS_PIN        GPIO_NUM_10
 #define DISPLAY_MOSI_PIN      GPIO_NUM_11
 #define DISPLAY_MIS0_PIN      GPIO_NUM_13
-#define DISPLAY_SPI_SCLK_HZ   (40 * 1000 * 1000)
+#define DISPLAY_SPI_SCLK_HZ   (26 * 1000 * 1000)
 
 #define LCD_SPI_HOST          SPI3_HOST
 
@@ -124,10 +124,10 @@
 #define LCD_TYPE_ILI9341_SERIAL
 #define DISPLAY_WIDTH         320
 #define DISPLAY_HEIGHT        240
-#define DISPLAY_MIRROR_X      true
-#define DISPLAY_MIRROR_Y      true
+#define DISPLAY_MIRROR_X      false
+#define DISPLAY_MIRROR_Y      false
 #define DISPLAY_SWAP_XY       true
-#define DISPLAY_INVERT_COLOR  false
+#define DISPLAY_INVERT_COLOR  true
 #define DISPLAY_RGB_ORDER     LCD_RGB_ELEMENT_ORDER_BGR
 #define DISPLAY_OFFSET_X      0
 #define DISPLAY_OFFSET_Y      0
